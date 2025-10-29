@@ -1,0 +1,33 @@
+# 操作系统文件
+.DS_Store
+Thumbs.db
+
+# 依赖库和构建产物 (以Node.js为例)
+node_modules/
+dist/
+build/
+
+# 日志和缓存
+*.log
+*.cache
+*.tmp
+*.feather
+*.pyc
+*.parquet
+
+# 本地配置
+.env
+
+# === 你新加的规则 ===
+
+# 忽略所有指定类型的图片
+*.jpg
+*.png
+
+# 忽略所有办公文档
+*.xlsx
+*.doc
+*.csv
+
+# 忽略所有 HTML 文件
+*.html
