@@ -113,7 +113,15 @@ class QuantDataManager:
                 error_msg = str(e)
                 
                 # 检测是否是API限流错误
-                if '每分钟最多访问该接口' in error_msg or 'rate limit' in error_msg.lower():
+                if '每天最多访问该接口' in error_msg:
+                    # 每天限制 - 这是硬限制，无法通过等待解决
+                    print(f"❌ API每日限制已达到: {error_msg}")
+                    print(f"   建议:")
+                    print(f"   1. 等待明天再继续下载")
+                    print(f"   2. 升级Tushare账户以获得更高的调用限额")
+                    print(f"   3. 分批下载，每天下载少量日期")
+                    return None  # 直接返回None，不重试
+                elif '每分钟最多访问该接口' in error_msg or 'rate limit' in error_msg.lower():
                     rate_limit_retries += 1
                     print(f"⚠️  API限流 (第{rate_limit_retries}次): {error_msg}")
                     print(f"   等待60秒后自动重试...")
@@ -577,6 +585,277 @@ class QuantDataManager:
             
         except Exception as e:
             print(f"更新申万行业分类数据失败: {e}")
+    
+    def update_sw_industry_member_latest(self):
+        """
+        更新申万行业成分股数据（最新数据）
+        
+        申万行业分类是固定的，只需要获取最新的成分股数据即可。
+        流程：
+        1. 获取所有申万三级行业代码（从现有数据 sw_l1_daily.parquet）
+        2. 对每个三级行业代码，使用 index_member_all(l3_code='850531.SI') 获取成分股
+        3. 存储为行业代码与成分股的关联关系
+        
+        **API**: `index_member_all` - 按三级分类提取申万行业成分
+        **API限制**: 单次最大2000行，总量不限制
+        
+        **存储**:
+        - 文件：sw_l3_member.parquet（复用现有文件）
+        - 内容：申万三级行业代码与成分股的关联关系（最新数据）
+        """
+        print("=" * 60)
+        print("开始更新申万行业成分股数据（最新）")
+        print("方法: 获取所有申万三级行业，然后下载每个行业的成分股")
+        print("⚠️  API限制: 单次最多2000条")
+        print("=" * 60)
+        
+        member_file_path = self.paths['industry_sw'] / "sw_l3_member.parquet"
+        
+        try:
+            # 1. 从现有数据获取所有申万三级行业代码
+            sw_index_file = self.paths['industry_sw'] / "sw_l1_daily.parquet"
+            industry_codes = []
+            
+            if sw_index_file.exists():
+                print("从现有数据中获取申万三级行业代码...")
+                df_sw = pd.read_parquet(sw_index_file, engine='pyarrow')
+                # 筛选出行业指数代码（.SI结尾）
+                si_data = df_sw[df_sw['ts_code'].str.endswith('.SI', na=False)]
+                if not si_data.empty:
+                    # 获取最新的行业代码列表
+                    latest_date = si_data['trade_date'].max()
+                    latest_industries = si_data[si_data['trade_date'] == latest_date]
+                    industry_codes = latest_industries['ts_code'].unique().tolist()
+                    print(f"  从现有数据获取到 {len(industry_codes)} 个行业代码（日期: {latest_date}）")
+            
+            # 如果现有数据没有，提示用户先运行 update_sw_industry_daily
+            if not industry_codes:
+                print("⚠️  未找到行业代码，请先运行 update_sw_industry_daily 获取行业列表")
+                return
+            
+            print(f"\n开始获取 {len(industry_codes)} 个行业的成分股数据...")
+            
+            all_member_data = []
+            success_count = 0
+            empty_count = 0
+            error_count = 0
+            
+            for i, l3_code in enumerate(industry_codes, 1):
+                if i % 20 == 0 or i == 1:
+                    print(f"  进度: {i}/{len(industry_codes)} ({i/len(industry_codes)*100:.1f}%)")
+                
+                try:
+                    # 获取该行业的所有成分股
+                    df_member = self._safe_api_call(self.pro.index_member_all,
+                                                   l3_code=l3_code)
+                    
+                    if df_member is not None and not df_member.empty:
+                        # 检查是否达到2000条限制
+                        if len(df_member) >= 2000:
+                            print(f"    ⚠️  警告: {l3_code} 成分股数据达到限制 ({len(df_member)} 条)")
+                        
+                        all_member_data.append(df_member)
+                        success_count += 1
+                        
+                        if i % 50 == 0:
+                            print(f"    已获取 {success_count} 个行业的成分股数据")
+                    else:
+                        empty_count += 1
+                    
+                    # API调用频率控制
+                    time.sleep(0.1)
+                    
+                except Exception as e:
+                    error_count += 1
+                    print(f"    获取 {l3_code} 成分股失败: {e}")
+                    continue
+            
+            # 保存数据
+            print("\n" + "=" * 60)
+            print("保存数据...")
+            if all_member_data:
+                df_all_members = pd.concat(all_member_data, ignore_index=True)
+                
+                # 检查数据字段，确保去重逻辑正确
+                print(f"  数据字段: {df_all_members.columns.tolist()}")
+                
+                # 保存为最新数据（覆盖旧数据，因为申万分类是固定的）
+                # 根据实际返回的字段去重
+                if 'l3_code' in df_all_members.columns and 'ts_code' in df_all_members.columns:
+                    df_all_members = df_all_members.drop_duplicates(subset=['l3_code', 'ts_code']).sort_values('l3_code')
+                elif 'index_code' in df_all_members.columns and 'con_code' in df_all_members.columns:
+                    df_all_members = df_all_members.drop_duplicates(subset=['index_code', 'con_code']).sort_values('index_code')
+                else:
+                    df_all_members = df_all_members.drop_duplicates().sort_values(df_all_members.columns[0])
+                
+                df_all_members.to_parquet(member_file_path, engine='pyarrow', index=False)
+                print(f"✅ 成功更新申万行业成分股数据（最新）:")
+                print(f"   总计: {len(df_all_members)} 条记录")
+                print(f"   涉及 {df_all_members['l3_code'].nunique() if 'l3_code' in df_all_members.columns else 'N/A'} 个行业")
+                
+                print(f"\n统计:")
+                print(f"   成功获取: {success_count} 个行业")
+                print(f"   空数据: {empty_count} 个行业")
+                print(f"   失败: {error_count} 个行业")
+            else:
+                print("⚠️  无成分股数据可保存")
+            
+            print("=" * 60)
+            
+        except Exception as e:
+            print(f"更新申万行业成分股数据失败: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def update_sw_l2_member_history(self):
+        """
+        更新申万二级行业个股历史映射数据
+        
+        获取历史上所有申万成分股对应的二级行业代码和名称（sw_l2），
+        以及其划入（in_date）和划出（out_date）日期。
+        
+        **API**: `index_member_all` - 按股票代码提取所属分类
+        **逻辑**: 
+        1. 获取所有股票列表
+        2. 对每只股票调用 index_member_all(ts_code='xxx') 获取申万历史归属
+        3. 提取二级行业相关数据（l2_code, l2_name, in_date, out_date）
+        
+        **存储**:
+        - 文件：industry_sw_member.parquet
+        - 内容：个股的申万L2历史归属（包含in_date和out_date）
+        
+        **API限制**: 单次最大2000行，总量不限制
+        """
+        print("=" * 60)
+        print("开始更新申万二级行业个股历史映射数据")
+        print("使用 API: index_member_all")
+        print("⚠️  API限制: 单次最多2000条")
+        print("=" * 60)
+        
+        member_file_path = self.paths['industry_sw'] / "industry_sw_member.parquet"
+        
+        try:
+            # 1. 获取所有股票列表
+            print("获取股票列表...")
+            stock_basic = self._safe_api_call(self.pro.stock_basic,
+                                            exchange='',
+                                            list_status='L',
+                                            fields='ts_code')
+            
+            if stock_basic is None or stock_basic.empty:
+                print("无法获取股票列表")
+                return
+            
+            stock_list = stock_basic['ts_code'].tolist()
+            print(f"获取到 {len(stock_list)} 只股票")
+            
+            print(f"\n开始获取每只股票的申万L2历史归属...")
+            print(f"注意: 需要逐只查询，可能需要较长时间")
+            
+            all_member_data = []
+            success_count = 0
+            empty_count = 0
+            error_count = 0
+            
+            for i, ts_code in enumerate(stock_list, 1):
+                if i % 100 == 0 or i == 1:
+                    print(f"  进度: {i}/{len(stock_list)} ({i/len(stock_list)*100:.1f}%)")
+                
+                try:
+                    # 获取该股票的申万历史归属
+                    df_member = self._safe_api_call(self.pro.index_member_all,
+                                                   ts_code=ts_code)
+                    
+                    if df_member is not None and not df_member.empty:
+                        # 提取二级行业相关数据
+                        # 保留所有字段，包括 l1, l2, l3 信息，但重点关注 l2
+                        all_member_data.append(df_member)
+                        success_count += 1
+                        
+                        if i % 500 == 0:
+                            print(f"    已获取 {success_count} 只股票的历史归属")
+                    else:
+                        empty_count += 1
+                    
+                    # API调用频率控制
+                    time.sleep(0.05)
+                    
+                except Exception as e:
+                    error_count += 1
+                    if error_count <= 10:  # 只打印前10个错误
+                        print(f"    获取 {ts_code} 失败: {e}")
+                    continue
+            
+            # 保存数据（增量更新）
+            print("\n" + "=" * 60)
+            print("保存数据（增量更新）...")
+            if all_member_data:
+                df_new_members = pd.concat(all_member_data, ignore_index=True)
+                
+                # 检查数据字段
+                print(f"  数据字段: {df_new_members.columns.tolist()}")
+                
+                # 确保有必要的字段
+                required_fields = ['ts_code', 'l2_code', 'l2_name', 'in_date', 'out_date']
+                missing_fields = [f for f in required_fields if f not in df_new_members.columns]
+                if missing_fields:
+                    print(f"  ⚠️  警告: 缺少字段 {missing_fields}")
+                
+                # 去重：根据股票代码和行业代码去重（同一股票在同一行业应该只有一条记录）
+                if 'l2_code' in df_new_members.columns:
+                    df_new_members = df_new_members.drop_duplicates(subset=['ts_code', 'l2_code']).sort_values(['ts_code', 'in_date'])
+                else:
+                    df_new_members = df_new_members.drop_duplicates(subset=['ts_code']).sort_values('ts_code')
+                
+                # 增量更新逻辑
+                if member_file_path.exists():
+                    print("  读取现有数据...")
+                    existing_df = pd.read_parquet(member_file_path, engine='pyarrow')
+                    
+                    # 合并数据
+                    combined_df = pd.concat([existing_df, df_new_members], ignore_index=True)
+                    
+                    # 去重：同一股票在同一行业只保留最新数据（根据in_date判断）
+                    if 'l2_code' in combined_df.columns and 'in_date' in combined_df.columns:
+                        # 按ts_code和l2_code分组，保留in_date最大的记录
+                        combined_df = combined_df.sort_values('in_date', na_position='last').drop_duplicates(
+                            subset=['ts_code', 'l2_code'], 
+                            keep='last'
+                        ).sort_values(['ts_code', 'in_date'])
+                    elif 'l2_code' in combined_df.columns:
+                        combined_df = combined_df.drop_duplicates(subset=['ts_code', 'l2_code'], keep='last').sort_values(['ts_code'])
+                    else:
+                        combined_df = combined_df.drop_duplicates(subset=['ts_code'], keep='last').sort_values('ts_code')
+                    
+                    combined_df.to_parquet(member_file_path, engine='pyarrow', index=False)
+                    print(f"✅ 成功更新申万L2历史映射数据（增量）:")
+                    print(f"   本次新增/更新: {len(df_new_members)} 条记录")
+                    print(f"   总计: {len(combined_df)} 条记录")
+                    print(f"   涉及 {combined_df['ts_code'].nunique()} 只股票")
+                    if 'l2_code' in combined_df.columns:
+                        print(f"   涉及 {combined_df['l2_code'].nunique()} 个申万二级行业")
+                else:
+                    # 首次创建
+                    df_new_members.to_parquet(member_file_path, engine='pyarrow', index=False)
+                    print(f"✅ 成功创建申万L2历史映射数据:")
+                    print(f"   总计: {len(df_new_members)} 条记录")
+                    print(f"   涉及 {df_new_members['ts_code'].nunique()} 只股票")
+                    if 'l2_code' in df_new_members.columns:
+                        print(f"   涉及 {df_new_members['l2_code'].nunique()} 个申万二级行业")
+                
+                print(f"\n统计:")
+                print(f"   成功获取: {success_count} 只股票")
+                print(f"   空数据: {empty_count} 只股票")
+                print(f"   失败: {error_count} 只股票")
+            else:
+                print("⚠️  无数据可保存")
+            
+            print("=" * 60)
+            
+        except Exception as e:
+            print(f"更新申万L2历史映射数据失败: {e}")
+            import traceback
+            traceback.print_exc()
     
     def update_index_daily(self, index_codes: List[str] = None, 
                           start_date: str = None, end_date: str = None):
@@ -1087,6 +1366,7 @@ class QuantDataManager:
         self.update_stock_basic()
         self.update_risk_free_rate(start_date, end_date)
         self.update_sw_industry_daily(start_date, end_date)
+        # 注意：申万行业成分股数据可单独运行 update_sw_industry_member_latest() 或 update_sw_l2_member_history()
         self.update_index_daily(None, start_date, end_date)
         self.update_index_constituents()
         self.update_stock_daily_hfq(start_date, end_date)
@@ -1130,12 +1410,14 @@ def main():
         print("3. 更新指数成分股数据")
         print("4. 更新无风险利率")
         print("5. 更新申万行业分类")
-        print("6. 更新指数日K线")
-        print("7. 更新股票基础信息")
-        print("8. 更新股票每日基础指标")
-        print("9. 更新股票财务指标")
+        print("6. 更新申万行业成分股（最新数据）")
+        print("7. 更新申万L2个股历史映射")
+        print("8. 更新指数日K线")
+        print("9. 更新股票基础信息")
+        print("10. 更新股票每日基础指标")
+        print("11. 更新股票财务指标")
         
-        choice = input("请输入选择 (1-9): ").strip()
+        choice = input("请输入选择 (1-11): ").strip()
         
         if choice == '1':
             manager.update_all()
@@ -1148,12 +1430,16 @@ def main():
         elif choice == '5':
             manager.update_sw_industry_daily()
         elif choice == '6':
-            manager.update_index_daily()
+            manager.update_sw_industry_member_latest()
         elif choice == '7':
-            manager.update_stock_basic()
+            manager.update_sw_l2_member_history()
         elif choice == '8':
-            manager.update_daily_basic()
+            manager.update_index_daily()
         elif choice == '9':
+            manager.update_stock_basic()
+        elif choice == '10':
+            manager.update_daily_basic()
+        elif choice == '11':
             manager.update_fina_indicator()
         else:
             print("无效选择")

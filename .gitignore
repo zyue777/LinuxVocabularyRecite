@@ -14,6 +14,7 @@ build/
 *.feather
 *.pyc
 *.parquet
+*.txt
 
 # 本地配置
 .env
