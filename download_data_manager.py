@@ -1112,180 +1112,100 @@ class QuantDataManager:
         except Exception as e:
             print(f"更新股票每日基础指标失败: {e}")
     
-    def _fetch_fina_indicator_worker(self, ts_code: str, start_date: str, end_date: str) -> Dict[str, Any]:
-        """并发工作函数：获取单只股票的财务指标"""
+    # 注意：财务指标更新功能已移除，请使用专门的程序单独更新（每季度一次）
+
+    def _get_latest_date_from_files(self, data_type: str) -> Optional[str]:
+        """从数据文件中获取最新日期"""
         try:
-            file_path = self.paths['stock_fina_indicator'] / f"{ts_code}.parquet"
-            
-            start_date_actual = start_date
-            if start_date is None:
-                latest_date = self._get_latest_date(file_path, 'end_date')
-                if latest_date:
-                    latest_dt = datetime.strptime(latest_date, '%Y%m%d')
-                    start_date_actual = (latest_dt + timedelta(days=1)).strftime('%Y%m%d')
-                else:
-                    # 不指定起始日期，获取全部历史数据
-                    # Tushare会返回该股票的所有可用财务指标数据
-                    start_date_actual = None
-            
-            if start_date_actual is not None and start_date_actual >= end_date:
-                return {'ts_code': ts_code, 'status': 'up_to_date'}
-            
-            # 如果start_date_actual为None，则不传递start_date参数（获取全部历史数据）
-            if start_date_actual is None:
-                df = self._safe_api_call(self.pro.fina_indicator,
-                                       ts_code=ts_code,
-                                       end_date=end_date)
-            else:
-                df = self._safe_api_call(self.pro.fina_indicator,
-                                       ts_code=ts_code,
-                                       start_date=start_date_actual,
-                                       end_date=end_date)
-            
-            if df is not None and not df.empty:
-                return {'ts_code': ts_code, 'status': 'success', 'data': (df, file_path)}
-            else:
-                return {'ts_code': ts_code, 'status': 'api_empty'}
-        except Exception as e:
-            return {'ts_code': ts_code, 'status': 'error', 'message': str(e)}
-
-    def update_fina_indicator(self, start_date: str = None, end_date: str = None, 
-                              stock_list: List[str] = None, batch_size: int = 200, max_workers: int = 5):
-        """
-        更新股票财务指标 - 支持高并发下载
-        
-        Args:
-            start_date: 开始日期 (YYYYMMDD)
-            end_date: 结束日期 (YYYYMMDD)
-            stock_list: 股票列表
-            batch_size: 批处理大小
-            max_workers: 最大并发线程数 (财务数据API限制较严，建议不超过5)
-        """
-        print("=" * 60)
-        print("开始更新股票财务指标（高并发模式）")
-        print(f"最大并发线程数: {max_workers}")
-        print("=" * 60)
-        
-        if stock_list is None:
-            print("获取股票列表...")
-            stock_basic = self._safe_api_call(self.pro.stock_basic, exchange='', list_status='L', fields='ts_code')
-            if stock_basic is None:
-                print("获取股票列表失败")
-                return
-            stock_list = stock_basic['ts_code'].tolist()
-        
-        if end_date is None:
-            end_date = datetime.now().strftime('%Y%m%d')
-        
-        # 预检查：判断哪些股票需要更新
-        print(f"\n预检查数据完整性...")
-        stocks_to_update = []
-        stocks_up_to_date = []
-        
-        for ts_code in stock_list:
-            file_path = self.paths['stock_fina_indicator'] / f"{ts_code}.parquet"
-            
-            # 检查是否需要更新
-            if not file_path.exists():
-                # 文件不存在，需要下载
-                stocks_to_update.append(ts_code)
-            else:
-                # 文件存在，检查最新日期
-                latest_date = self._get_latest_date(file_path, 'end_date')
-                if latest_date:
-                    latest_dt = datetime.strptime(latest_date, '%Y%m%d')
-                    start_date_actual = (latest_dt + timedelta(days=1)).strftime('%Y%m%d')
-                    
-                    if start_date_actual >= end_date:
-                        # 数据已是最新
-                        stocks_up_to_date.append(ts_code)
-                    else:
-                        # 需要增量更新
-                        stocks_to_update.append(ts_code)
-                else:
-                    # 文件为空或损坏，需要重新下载
-                    stocks_to_update.append(ts_code)
-        
-        print(f"  ✅ 数据已是最新: {len(stocks_up_to_date)} 只")
-        print(f"  📥 需要更新: {len(stocks_to_update)} 只")
-        
-        if len(stocks_to_update) == 0:
-            print("\n所有股票数据均已是最新，无需更新！")
-            # 生成报告
-            self._generate_download_report(
-                data_type='股票财务指标',
-                total_count=len(stock_list),
-                success_count=0,
-                up_to_date_count=len(stocks_up_to_date),
-                empty_stocks=[],
-                failed_stocks=[]
-            )
-            return
-        
-        print(f"\n开始下载 {len(stocks_to_update)} 只股票的数据...")
-        
-        # 只处理需要更新的股票
-        stock_list = stocks_to_update
-        
-        up_to_date_stocks = []
-        success_stocks = []
-        empty_stocks = []
-        failed_stocks = []
-        batch_data_to_save = []
-        
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            for batch_start in range(0, len(stock_list), batch_size):
-                batch_end = min(batch_start + batch_size, len(stock_list))
-                batch_stocks = stock_list[batch_start:batch_end]
+            if data_type == '股票日K线(后复权)':
+                # 获取所有股票日K线文件的最新日期
+                hfq_dir = self.paths['stock_daily_hfq']
+                if not hfq_dir.exists():
+                    return None
                 
-                print(f"\n提交批次 {batch_start//batch_size + 1}: 股票 {batch_start+1}-{batch_end} ({len(batch_stocks)} 只)")
-                
-                futures = {executor.submit(self._fetch_fina_indicator_worker, ts_code, start_date, end_date): ts_code for ts_code in batch_stocks}
-                
-                for future in as_completed(futures):
+                latest_dates = []
+                for file_path in hfq_dir.glob("*.parquet"):
                     try:
-                        result = future.result()
-                        ts_code = result['ts_code']
-                        status = result['status']
-                        if status == 'success':
-                            batch_data_to_save.append(result['data'])
-                            success_stocks.append(ts_code)
-                        elif status == 'up_to_date':
-                            up_to_date_stocks.append(ts_code)
-                        elif status == 'api_empty':
-                            empty_stocks.append(ts_code)
-                        elif status == 'error':
-                            failed_stocks.append((ts_code, result['message']))
-                    except Exception as e:
-                        failed_stocks.append((futures[future], str(e)))
-
-                if batch_data_to_save:
-                    print(f"  批量保存 {len(batch_data_to_save)} 只股票的财务指标...")
-                    for df, file_path in batch_data_to_save:
-                        try:
-                            if file_path.exists():
-                                existing_df = pd.read_parquet(file_path, engine='pyarrow')
-                                combined_df = pd.concat([existing_df, df], ignore_index=True)
-                                combined_df = combined_df.drop_duplicates(subset=['ts_code', 'end_date']).sort_values('end_date')
-                                combined_df.to_parquet(file_path, engine='pyarrow', index=False)
-                            else:
-                                df.to_parquet(file_path, engine='pyarrow', index=False)
-                        except Exception as e:
-                            print(f"    保存 {file_path.name} 数据失败: {e}")
-                            failed_stocks.append((file_path.stem, str(e)))
-                    batch_data_to_save.clear()
-
-        # 合并预检查中发现的"已是最新"股票
-        all_up_to_date = len(stocks_up_to_date) + len(up_to_date_stocks)
+                        latest_date = self._get_latest_date(file_path, 'trade_date')
+                        if latest_date:
+                            latest_dates.append(latest_date)
+                    except:
+                        continue
+                
+                if latest_dates:
+                    return max(latest_dates)
+                return None
+            
+            elif data_type == '股票每日基础指标':
+                file_path = self.paths['stock_daily_basic'] / "daily_basic_all.parquet"
+                return self._get_latest_date(file_path, 'trade_date')
+            
+            elif data_type == '股票财务指标':
+                # 获取所有财务指标文件的最新日期
+                fina_dir = self.paths['stock_fina_indicator']
+                if not fina_dir.exists():
+                    return None
+                
+                latest_dates = []
+                for file_path in fina_dir.glob("*.parquet"):
+                    try:
+                        latest_date = self._get_latest_date(file_path, 'end_date')
+                        if latest_date:
+                            latest_dates.append(latest_date)
+                    except:
+                        continue
+                
+                if latest_dates:
+                    return max(latest_dates)
+                return None
+            
+            elif data_type == '无风险利率':
+                file_path = self.paths['factors_rfr'] / "rfr_daily.parquet"
+                return self._get_latest_date(file_path, 'trade_date')
+            
+            elif data_type == '指数日K线':
+                # 获取所有指数日K线文件的最新日期
+                index_dir = self.paths['index_daily']
+                if not index_dir.exists():
+                    return None
+                
+                latest_dates = []
+                for file_path in index_dir.glob("*.parquet"):
+                    try:
+                        latest_date = self._get_latest_date(file_path, 'trade_date')
+                        if latest_date:
+                            latest_dates.append(latest_date)
+                    except:
+                        continue
+                
+                if latest_dates:
+                    return max(latest_dates)
+                return None
+            
+            elif data_type == '指数成分股':
+                # 获取所有指数成分股文件的最新日期
+                const_dir = self.paths['index_constituents']
+                if not const_dir.exists():
+                    return None
+                
+                latest_dates = []
+                for file_path in const_dir.glob("*_const.parquet"):
+                    try:
+                        latest_date = self._get_latest_date(file_path, 'trade_date')
+                        if latest_date:
+                            latest_dates.append(latest_date)
+                    except:
+                        continue
+                
+                if latest_dates:
+                    return max(latest_dates)
+                return None
+            
+        except Exception as e:
+            print(f"获取最新日期失败: {e}")
+            return None
         
-        self._generate_download_report(
-            data_type='股票财务指标',
-            total_count=len(stock_list) + len(stocks_up_to_date),  # 总数包含所有股票
-            success_count=len(success_stocks),
-            up_to_date_count=all_up_to_date,  # 包含预检查跳过的
-            empty_stocks=empty_stocks,
-            failed_stocks=failed_stocks
-        )
+        return None
 
     def _generate_download_report(self, data_type: str, total_count: int, success_count: int, up_to_date_count: int, empty_stocks: List[str], failed_stocks: List[Tuple[str, str]]):
         """生成并打印下载报告"""
@@ -1298,6 +1218,10 @@ class QuantDataManager:
         failed_count = len(failed_stocks)
 
         completeness = (success_count + up_to_date_count) / total_count if total_count > 0 else 0
+        
+        # 获取最新数据截止日期
+        latest_date = self._get_latest_date_from_files(data_type)
+        latest_date_str = latest_date if latest_date else "未知"
 
         # --- Console Output ---
         print("\n" + "="*60)
@@ -1309,41 +1233,41 @@ class QuantDataManager:
         print(f"  -  数据已是最新: {up_to_date_count} 只")
         print(f"  ⚠️  API返回空数据: {empty_count} 只")
         print(f"  ❌ 下载失败: {failed_count} 只")
-        
         print(f"\n数据完整度: {completeness:.2%}")
+        print(f"最新数据截止日期: {latest_date_str}")
         
-        if empty_count > 0 or failed_count > 0:
-            print(f"\n详情已保存至报告文件: {report_path}")
+        print(f"\n详情已保存至报告文件: {report_path}")
         print("="*60)
 
         # --- File Output ---
-        if empty_count > 0 or failed_count > 0:
-            with open(report_path, 'w', encoding='utf-8') as f:
-                f.write(f"{data_type} 数据下载报告\n")
-                f.write(f"报告时间: {report_time.strftime('%Y-%m-%d %H:%M:%S')}\n")
-                f.write("="*50 + "\n\n")
-                
-                f.write(f"摘要:\n")
-                f.write(f"  - 总计任务: {total_count}\n")
-                f.write(f"  - 成功下载/更新: {success_count}\n")
-                f.write(f"  - 数据已是最新: {up_to_date_count}\n")
-                f.write(f"  - API返回空数据: {empty_count}\n")
-                f.write(f"  - 下载失败: {failed_count}\n")
-                f.write(f"  - 数据完整度: {completeness:.2%}\n\n")
+        # 始终生成报告文件，包含最新日期信息
+        with open(report_path, 'w', encoding='utf-8') as f:
+            f.write(f"{data_type} 数据下载报告\n")
+            f.write(f"报告时间: {report_time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write("="*50 + "\n\n")
+            
+            f.write(f"摘要:\n")
+            f.write(f"  - 总计任务: {total_count}\n")
+            f.write(f"  - 成功下载/更新: {success_count}\n")
+            f.write(f"  - 数据已是最新: {up_to_date_count}\n")
+            f.write(f"  - API返回空数据: {empty_count}\n")
+            f.write(f"  - 下载失败: {failed_count}\n")
+            f.write(f"  - 数据完整度: {completeness:.2%}\n")
+            f.write(f"  - 最新数据截止日期: {latest_date_str}\n\n")
 
-                if empty_count > 0:
-                    f.write("="*50 + "\n")
-                    f.write(f"API返回空数据列表 ({empty_count} 只):\n")
-                    f.write("="*50 + "\n")
-                    f.write("\n".join(empty_stocks))
-                    f.write("\n\n")
+            if empty_count > 0:
+                f.write("="*50 + "\n")
+                f.write(f"API返回空数据列表 ({empty_count} 只):\n")
+                f.write("="*50 + "\n")
+                f.write("\n".join(empty_stocks))
+                f.write("\n\n")
 
-                if failed_count > 0:
-                    f.write("="*50 + "\n")
-                    f.write(f"下载失败列表 ({failed_count} 只):\n")
-                    f.write("="*50 + "\n")
-                    for ts_code, message in failed_stocks:
-                        f.write(f"{ts_code}: {message}\n")
+            if failed_count > 0:
+                f.write("="*50 + "\n")
+                f.write(f"下载失败列表 ({failed_count} 只):\n")
+                f.write("="*50 + "\n")
+                for ts_code, message in failed_stocks:
+                    f.write(f"{ts_code}: {message}\n")
 
     def update_all(self, start_date: str = None, end_date: str = None):
         """
@@ -1373,7 +1297,7 @@ class QuantDataManager:
         
         print("\n步骤2: 更新因子模型原材料...")
         self.update_daily_basic(start_date, end_date)
-        self.update_fina_indicator(start_date, end_date)
+        # 注意：财务指标数据请使用专门的程序单独更新（每季度一次）
         
         print("\n" + "=" * 80)
         print("✅ 数据更新完成！")
@@ -1415,9 +1339,9 @@ def main():
         print("8. 更新指数日K线")
         print("9. 更新股票基础信息")
         print("10. 更新股票每日基础指标")
-        print("11. 更新股票财务指标")
+        # 注意：财务指标数据请使用专门的程序单独更新（每季度一次）
         
-        choice = input("请输入选择 (1-11): ").strip()
+        choice = input("请输入选择 (1-10): ").strip()
         
         if choice == '1':
             manager.update_all()
@@ -1439,8 +1363,6 @@ def main():
             manager.update_stock_basic()
         elif choice == '10':
             manager.update_daily_basic()
-        elif choice == '11':
-            manager.update_fina_indicator()
         else:
             print("无效选择")
             return 1
