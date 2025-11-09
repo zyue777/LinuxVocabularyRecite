@@ -278,6 +278,375 @@ class QuantDataManager:
             failed_stocks=failed_stocks
         )
     
+    def _fetch_income_worker(self, ts_code: str) -> Dict[str, Any]:
+        """并发工作函数：获取单只股票的利润表数据"""
+        try:
+            table_path = self.paths['stock_financial_tables'] / 'income'
+            table_path.mkdir(parents=True, exist_ok=True)
+            file_path = table_path / f"{ts_code}.parquet"
+            
+            # 确定开始日期（基于现有数据）
+            start_date_actual = None
+            if file_path.exists():
+                latest_date = self._get_latest_date(file_path, 'end_date')
+                if latest_date:
+                    latest_dt = datetime.strptime(latest_date, '%Y%m%d')
+                    start_date_actual = (latest_dt + timedelta(days=1)).strftime('%Y%m%d')
+            
+            end_date = datetime.now().strftime('%Y%m%d')
+            
+            if start_date_actual and start_date_actual >= end_date:
+                return {'ts_code': ts_code, 'status': 'up_to_date'}
+
+            # 获取数据
+            df = self._safe_api_call(self.pro.income,
+                                   ts_code=ts_code,
+                                   start_date=start_date_actual if start_date_actual else '19900101',
+                                   end_date=end_date)
+            
+            if df is not None and not df.empty:
+                return {'ts_code': ts_code, 'status': 'success', 'data': (df, file_path)}
+            else:
+                return {'ts_code': ts_code, 'status': 'api_empty'}
+        except Exception as e:
+            return {'ts_code': ts_code, 'status': 'error', 'message': str(e)}
+    
+    def _fetch_balancesheet_worker(self, ts_code: str) -> Dict[str, Any]:
+        """并发工作函数：获取单只股票的资产负债表数据"""
+        try:
+            table_path = self.paths['stock_financial_tables'] / 'balancesheet'
+            table_path.mkdir(parents=True, exist_ok=True)
+            file_path = table_path / f"{ts_code}.parquet"
+            
+            # 确定开始日期（基于现有数据）
+            start_date_actual = None
+            if file_path.exists():
+                latest_date = self._get_latest_date(file_path, 'end_date')
+                if latest_date:
+                    latest_dt = datetime.strptime(latest_date, '%Y%m%d')
+                    start_date_actual = (latest_dt + timedelta(days=1)).strftime('%Y%m%d')
+            
+            end_date = datetime.now().strftime('%Y%m%d')
+            
+            if start_date_actual and start_date_actual >= end_date:
+                return {'ts_code': ts_code, 'status': 'up_to_date'}
+
+            # 获取数据
+            df = self._safe_api_call(self.pro.balancesheet,
+                                   ts_code=ts_code,
+                                   start_date=start_date_actual if start_date_actual else '19900101',
+                                   end_date=end_date)
+            
+            if df is not None and not df.empty:
+                return {'ts_code': ts_code, 'status': 'success', 'data': (df, file_path)}
+            else:
+                return {'ts_code': ts_code, 'status': 'api_empty'}
+        except Exception as e:
+            return {'ts_code': ts_code, 'status': 'error', 'message': str(e)}
+    
+    def _fetch_cashflow_worker(self, ts_code: str) -> Dict[str, Any]:
+        """并发工作函数：获取单只股票的现金流量表数据"""
+        try:
+            table_path = self.paths['stock_financial_tables'] / 'cashflow'
+            table_path.mkdir(parents=True, exist_ok=True)
+            file_path = table_path / f"{ts_code}.parquet"
+            
+            # 确定开始日期（基于现有数据）
+            start_date_actual = None
+            if file_path.exists():
+                latest_date = self._get_latest_date(file_path, 'end_date')
+                if latest_date:
+                    latest_dt = datetime.strptime(latest_date, '%Y%m%d')
+                    start_date_actual = (latest_dt + timedelta(days=1)).strftime('%Y%m%d')
+            
+            end_date = datetime.now().strftime('%Y%m%d')
+            
+            if start_date_actual and start_date_actual >= end_date:
+                return {'ts_code': ts_code, 'status': 'up_to_date'}
+
+            # 获取数据
+            df = self._safe_api_call(self.pro.cashflow,
+                                   ts_code=ts_code,
+                                   start_date=start_date_actual if start_date_actual else '19900101',
+                                   end_date=end_date)
+            
+            if df is not None and not df.empty:
+                return {'ts_code': ts_code, 'status': 'success', 'data': (df, file_path)}
+            else:
+                return {'ts_code': ts_code, 'status': 'api_empty'}
+        except Exception as e:
+            return {'ts_code': ts_code, 'status': 'error', 'message': str(e)}
+    
+    def update_income_table(self, stock_list: List[str] = None, batch_size: int = 50, max_workers: int = 1):
+        """
+        更新利润表数据 - 支持批量下载
+        
+        Args:
+            stock_list: 股票代码列表，如果为None则获取所有股票
+            batch_size: 批处理大小
+            max_workers: 最大并发线程数
+        """
+        print("=" * 60)
+        print("开始更新利润表数据")
+        print(f"最大并发线程数: {max_workers}")
+        print("=" * 60)
+        
+        # 获取股票列表
+        if stock_list is None:
+            print("获取股票列表...")
+            stock_basic_df = self._safe_api_call(self.pro.stock_basic, 
+                                            exchange='', 
+                                            list_status='L', 
+                                            fields='ts_code')
+            if stock_basic_df is None:
+                print("获取股票列表失败")
+                return
+            stock_list = stock_basic_df['ts_code'].tolist()
+        
+        print(f"共需更新 {len(stock_list)} 只股票")
+        
+        up_to_date_stocks = []
+        success_stocks = []
+        empty_stocks = []
+        failed_stocks = []
+        batch_data_to_save = []
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            for batch_start in range(0, len(stock_list), batch_size):
+                batch_end = min(batch_start + batch_size, len(stock_list))
+                batch_stocks = stock_list[batch_start:batch_end]
+                
+                print(f"\n提交批次 {batch_start//batch_size + 1}: 股票 {batch_start+1}-{batch_end} ({len(batch_stocks)} 只)")
+                
+                futures = {executor.submit(self._fetch_income_worker, ts_code): ts_code for ts_code in batch_stocks}
+                
+                for future in as_completed(futures):
+                    try:
+                        result = future.result()
+                        ts_code = result['ts_code']
+                        status = result['status']
+
+                        if status == 'success':
+                            batch_data_to_save.append(result['data'])
+                            success_stocks.append(ts_code)
+                        elif status == 'up_to_date':
+                            up_to_date_stocks.append(ts_code)
+                        elif status == 'api_empty':
+                            empty_stocks.append(ts_code)
+                        elif status == 'error':
+                            failed_stocks.append((ts_code, result['message']))
+                    except Exception as e:
+                        failed_stocks.append((futures[future], str(e)))
+
+                if batch_data_to_save:
+                    print(f"  批量保存 {len(batch_data_to_save)} 只股票的数据...")
+                    for df, file_path in batch_data_to_save:
+                        try:
+                            if file_path.exists():
+                                existing_df = pd.read_parquet(file_path, engine='pyarrow')
+                                combined_df = pd.concat([existing_df, df], ignore_index=True)
+                                combined_df = combined_df.drop_duplicates(subset=['ts_code', 'end_date']).sort_values('end_date')
+                                combined_df.to_parquet(file_path, engine='pyarrow', index=False)
+                            else:
+                                df = df.drop_duplicates(subset=['ts_code', 'end_date']).sort_values('end_date')
+                                df.to_parquet(file_path, engine='pyarrow', index=False)
+                        except Exception as e:
+                            print(f"    保存 {file_path.name} 数据失败: {e}")
+                            failed_stocks.append((file_path.stem, str(e)))
+                    batch_data_to_save.clear()
+                
+                # 限流：每批次之间等待时间（控制API调用频率）
+                time.sleep(15)  # 每批次等待15秒，确保不超过200次/分钟
+
+        self._generate_download_report(
+            data_type='利润表',
+            total_count=len(stock_list),
+            success_count=len(success_stocks),
+            up_to_date_count=len(up_to_date_stocks),
+            empty_stocks=empty_stocks,
+            failed_stocks=failed_stocks
+        )
+    
+    def update_balancesheet_table(self, stock_list: List[str] = None, batch_size: int = 50, max_workers: int = 1):
+        """
+        更新资产负债表数据 - 支持批量下载
+        
+        Args:
+            stock_list: 股票代码列表，如果为None则获取所有股票
+            batch_size: 批处理大小
+            max_workers: 最大并发线程数
+        """
+        print("=" * 60)
+        print("开始更新资产负债表数据")
+        print(f"最大并发线程数: {max_workers}")
+        print("=" * 60)
+        
+        # 获取股票列表
+        if stock_list is None:
+            print("获取股票列表...")
+            stock_basic_df = self._safe_api_call(self.pro.stock_basic, 
+                                            exchange='', 
+                                            list_status='L', 
+                                            fields='ts_code')
+            if stock_basic_df is None:
+                print("获取股票列表失败")
+                return
+            stock_list = stock_basic_df['ts_code'].tolist()
+        
+        print(f"共需更新 {len(stock_list)} 只股票")
+        
+        up_to_date_stocks = []
+        success_stocks = []
+        empty_stocks = []
+        failed_stocks = []
+        batch_data_to_save = []
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            for batch_start in range(0, len(stock_list), batch_size):
+                batch_end = min(batch_start + batch_size, len(stock_list))
+                batch_stocks = stock_list[batch_start:batch_end]
+                
+                print(f"\n提交批次 {batch_start//batch_size + 1}: 股票 {batch_start+1}-{batch_end} ({len(batch_stocks)} 只)")
+                
+                futures = {executor.submit(self._fetch_balancesheet_worker, ts_code): ts_code for ts_code in batch_stocks}
+                
+                for future in as_completed(futures):
+                    try:
+                        result = future.result()
+                        ts_code = result['ts_code']
+                        status = result['status']
+
+                        if status == 'success':
+                            batch_data_to_save.append(result['data'])
+                            success_stocks.append(ts_code)
+                        elif status == 'up_to_date':
+                            up_to_date_stocks.append(ts_code)
+                        elif status == 'api_empty':
+                            empty_stocks.append(ts_code)
+                        elif status == 'error':
+                            failed_stocks.append((ts_code, result['message']))
+                    except Exception as e:
+                        failed_stocks.append((futures[future], str(e)))
+
+                if batch_data_to_save:
+                    print(f"  批量保存 {len(batch_data_to_save)} 只股票的数据...")
+                    for df, file_path in batch_data_to_save:
+                        try:
+                            if file_path.exists():
+                                existing_df = pd.read_parquet(file_path, engine='pyarrow')
+                                combined_df = pd.concat([existing_df, df], ignore_index=True)
+                                combined_df = combined_df.drop_duplicates(subset=['ts_code', 'end_date']).sort_values('end_date')
+                                combined_df.to_parquet(file_path, engine='pyarrow', index=False)
+                            else:
+                                df = df.drop_duplicates(subset=['ts_code', 'end_date']).sort_values('end_date')
+                                df.to_parquet(file_path, engine='pyarrow', index=False)
+                        except Exception as e:
+                            print(f"    保存 {file_path.name} 数据失败: {e}")
+                            failed_stocks.append((file_path.stem, str(e)))
+                    batch_data_to_save.clear()
+                
+                # 限流：每批次之间等待时间（控制API调用频率）
+                time.sleep(15)  # 每批次等待15秒，确保不超过200次/分钟
+
+        self._generate_download_report(
+            data_type='资产负债表',
+            total_count=len(stock_list),
+            success_count=len(success_stocks),
+            up_to_date_count=len(up_to_date_stocks),
+            empty_stocks=empty_stocks,
+            failed_stocks=failed_stocks
+        )
+    
+    def update_cashflow_table(self, stock_list: List[str] = None, batch_size: int = 50, max_workers: int = 1):
+        """
+        更新现金流量表数据 - 支持批量下载
+        
+        Args:
+            stock_list: 股票代码列表，如果为None则获取所有股票
+            batch_size: 批处理大小
+            max_workers: 最大并发线程数
+        """
+        print("=" * 60)
+        print("开始更新现金流量表数据")
+        print(f"最大并发线程数: {max_workers}")
+        print("=" * 60)
+        
+        # 获取股票列表
+        if stock_list is None:
+            print("获取股票列表...")
+            stock_basic_df = self._safe_api_call(self.pro.stock_basic, 
+                                            exchange='', 
+                                            list_status='L', 
+                                            fields='ts_code')
+            if stock_basic_df is None:
+                print("获取股票列表失败")
+                return
+            stock_list = stock_basic_df['ts_code'].tolist()
+        
+        print(f"共需更新 {len(stock_list)} 只股票")
+        
+        up_to_date_stocks = []
+        success_stocks = []
+        empty_stocks = []
+        failed_stocks = []
+        batch_data_to_save = []
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            for batch_start in range(0, len(stock_list), batch_size):
+                batch_end = min(batch_start + batch_size, len(stock_list))
+                batch_stocks = stock_list[batch_start:batch_end]
+                
+                print(f"\n提交批次 {batch_start//batch_size + 1}: 股票 {batch_start+1}-{batch_end} ({len(batch_stocks)} 只)")
+                
+                futures = {executor.submit(self._fetch_cashflow_worker, ts_code): ts_code for ts_code in batch_stocks}
+                
+                for future in as_completed(futures):
+                    try:
+                        result = future.result()
+                        ts_code = result['ts_code']
+                        status = result['status']
+
+                        if status == 'success':
+                            batch_data_to_save.append(result['data'])
+                            success_stocks.append(ts_code)
+                        elif status == 'up_to_date':
+                            up_to_date_stocks.append(ts_code)
+                        elif status == 'api_empty':
+                            empty_stocks.append(ts_code)
+                        elif status == 'error':
+                            failed_stocks.append((ts_code, result['message']))
+                    except Exception as e:
+                        failed_stocks.append((futures[future], str(e)))
+
+                if batch_data_to_save:
+                    print(f"  批量保存 {len(batch_data_to_save)} 只股票的数据...")
+                    for df, file_path in batch_data_to_save:
+                        try:
+                            if file_path.exists():
+                                existing_df = pd.read_parquet(file_path, engine='pyarrow')
+                                combined_df = pd.concat([existing_df, df], ignore_index=True)
+                                combined_df = combined_df.drop_duplicates(subset=['ts_code', 'end_date']).sort_values('end_date')
+                                combined_df.to_parquet(file_path, engine='pyarrow', index=False)
+                            else:
+                                df = df.drop_duplicates(subset=['ts_code', 'end_date']).sort_values('end_date')
+                                df.to_parquet(file_path, engine='pyarrow', index=False)
+                        except Exception as e:
+                            print(f"    保存 {file_path.name} 数据失败: {e}")
+                            failed_stocks.append((file_path.stem, str(e)))
+                    batch_data_to_save.clear()
+                
+                # 限流：每批次之间等待时间（控制API调用频率）
+                time.sleep(15)  # 每批次等待15秒，确保不超过200次/分钟
+
+        self._generate_download_report(
+            data_type='现金流量表',
+            total_count=len(stock_list),
+            success_count=len(success_stocks),
+            up_to_date_count=len(up_to_date_stocks),
+            empty_stocks=empty_stocks,
+            failed_stocks=failed_stocks
+        )
+    
     def update_index_constituents(self, index_codes: List[str] = None, 
                                 start_year: int = 2010):
         """
