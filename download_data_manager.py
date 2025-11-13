@@ -53,9 +53,11 @@ class QuantDataManager:
         # 定义路径
         self.paths = {
             'stock_daily_hfq': self.data_center_path / "stock" / "daily_hfq",
+            'stock_daily_qfq': self.data_center_path / "stock" / "daily_qfq",  # 🆕 前复权数据目录
             'stock_daily_basic': self.data_center_path / "stock" / "daily_basic",
             'stock_fina_indicator': self.data_center_path / "stock" / "fina_indicator",
             'stock_financial_tables': self.data_center_path / "stock" / "financial_tables",  # 保留路径定义，供外部单独文件使用
+            'stock_moneyflow': self.data_center_path / "stock" / "moneyflow",
             'index_daily': self.data_center_path / "index" / "daily",
             'index_constituents': self.data_center_path / "index" / "constituents",
             'factors_ff5': self.data_center_path / "factors" / "fama_french_5",
@@ -67,6 +69,14 @@ class QuantDataManager:
         for path in self.paths.values():
             path.mkdir(parents=True, exist_ok=True)
         
+        # 导入前复权转换函数
+        try:
+            from data_utils import convert_hfq_to_qfq
+            self.convert_hfq_to_qfq = convert_hfq_to_qfq
+        except ImportError:
+            print("警告: 无法导入 data_utils.convert_hfq_to_qfq，前复权自动转换功能将不可用")
+            self.convert_hfq_to_qfq = None
+        
         print(f"数据中心管理器初始化完成")
         print(f"根目录: {self.data_center_path}")
     
@@ -76,14 +86,29 @@ class QuantDataManager:
             return None
         
         try:
+            # 先读取文件的所有列，检查是否存在目标列
+            df = pd.read_parquet(file_path, engine='pyarrow')
+            if df.empty:
+                return None
+            
+            # 检查列是否存在
+            if date_col not in df.columns:
+                # 尝试查找可能的日期列（trade_date, end_date等）
+                possible_date_cols = ['trade_date', 'end_date', 'ann_date', 'cal_date']
+                for col in possible_date_cols:
+                    if col in df.columns:
+                        date_col = col
+                        break
+                else:
+                    # 如果找不到任何日期列，返回None
+                    return None
+            
             # 只读取日期列以提高效率
-            df = pd.read_parquet(file_path, engine='pyarrow', columns=[date_col])
-            if not df.empty:
+            if date_col in df.columns:
                 return df[date_col].max()
             return None
         except Exception as e:
-            # print(f"读取文件 {file_path} 时出错: {e}")
-            # If file is empty or corrupt, it's fine to return None.
+            # 如果文件损坏或读取失败，返回None（允许重新下载）
             return None
     
     def _safe_api_call(self, func, *args, **kwargs):
@@ -172,6 +197,58 @@ class QuantDataManager:
         except Exception as e:
             return {'ts_code': ts_code, 'status': 'error', 'message': str(e)}
     
+    def _fetch_moneyflow_worker(self, ts_code: str, start_date: str, end_date: str, stock_info: Dict[str, Any]) -> Dict[str, Any]:
+        """并发工作函数：获取单只股票的资金流向数据（增量更新）"""
+        try:
+            file_path = self.paths['stock_moneyflow'] / f"{ts_code}.parquet"
+            
+            # 确定开始日期（增量更新逻辑）
+            # 优先使用现有数据的最新日期，确保不会重复下载
+            latest_date = self._get_latest_date(file_path, 'trade_date')
+            
+            if latest_date:
+                # 如果文件存在且有数据，从最新日期的下一天开始
+                latest_dt = datetime.strptime(latest_date, '%Y%m%d')
+                data_start_date = (latest_dt + timedelta(days=1)).strftime('%Y%m%d')
+            else:
+                # 如果文件不存在，使用上市日期或默认日期
+                list_date = stock_info.get(ts_code)
+                data_start_date = list_date if list_date and list_date != 'None' else '20100101'  # 资金流数据从2010年开始
+            
+            # 如果用户指定了start_date，取两者中的较大值（确保不重复下载）
+            if start_date is not None:
+                start_date_actual = max(start_date, data_start_date) if latest_date else start_date
+            else:
+                start_date_actual = data_start_date
+            
+            if start_date_actual >= end_date:
+                return {'ts_code': ts_code, 'status': 'up_to_date'}
+
+            # 获取数据
+            df = self._safe_api_call(self.pro.moneyflow,
+                                   ts_code=ts_code,
+                                   start_date=start_date_actual,
+                                   end_date=end_date)
+            
+            if df is not None and not df.empty:
+                # 验证数据格式：确保有必需的列
+                required_cols = ['ts_code', 'trade_date']
+                missing_cols = [col for col in required_cols if col not in df.columns]
+                if missing_cols:
+                    # 如果缺少必需列，记录错误但不中断
+                    return {'ts_code': ts_code, 'status': 'error', 
+                           'message': f'API返回数据缺少必需列: {missing_cols}, 实际列: {list(df.columns)}'}
+                
+                # 确保ts_code列存在（如果API没有返回，则添加）
+                if 'ts_code' not in df.columns:
+                    df['ts_code'] = ts_code
+                
+                return {'ts_code': ts_code, 'status': 'success', 'data': (df, file_path)}
+            else:
+                return {'ts_code': ts_code, 'status': 'api_empty'}
+        except Exception as e:
+            return {'ts_code': ts_code, 'status': 'error', 'message': str(e)}
+    
     def update_stock_daily_hfq(self, start_date: str = None, end_date: str = None, 
                               stock_list: List[str] = None, batch_size: int = 150, max_workers: int = 5):
         """
@@ -249,25 +326,73 @@ class QuantDataManager:
                         failed_stocks.append((futures[future], str(e)))
 
                 if batch_data_to_save:
-                    print(f"  批量保存 {len(batch_data_to_save)} 只股票的数据...")
+                    print(f"  批量保存 {len(batch_data_to_save)} 只股票的后复权数据...")
+                    stocks_to_convert = []  # 记录需要转换前复权的股票
+                    
                     for df, file_path in batch_data_to_save:
                         try:
+                            # 保存后复权数据
                             if file_path.exists():
                                 existing_df = pd.read_parquet(file_path, engine='pyarrow')
                                 combined_df = pd.concat([existing_df, df], ignore_index=True)
                                 combined_df = combined_df.drop_duplicates(subset=['ts_code', 'trade_date']).sort_values('trade_date')
                                 combined_df.to_parquet(file_path, engine='pyarrow', index=False)
+                                
+                                # 检查是否需要更新前复权数据
+                                # 获取后复权数据的最新日期
+                                hfq_latest_date = combined_df['trade_date'].max()
+                                
+                                # 检查前复权文件是否存在以及是否需要更新
+                                qfq_file = self.paths['stock_daily_qfq'] / f"{file_path.stem}.parquet"
+                                need_convert = False
+                                
+                                if not qfq_file.exists():
+                                    # 前复权文件不存在，需要转换
+                                    need_convert = True
+                                else:
+                                    # 检查前复权文件的最新日期
+                                    try:
+                                        qfq_df = pd.read_parquet(qfq_file, engine='pyarrow')
+                                        if not qfq_df.empty and 'trade_date' in qfq_df.columns:
+                                            qfq_latest_date = qfq_df['trade_date'].max()
+                                            # 如果后复权数据更新了，需要重新转换
+                                            if hfq_latest_date > qfq_latest_date:
+                                                need_convert = True
+                                        else:
+                                            need_convert = True
+                                    except:
+                                        # 如果读取失败，重新转换
+                                        need_convert = True
+                                
+                                if need_convert:
+                                    stocks_to_convert.append(file_path.stem)
                             else:
+                                # 新文件，直接保存
                                 df.to_parquet(file_path, engine='pyarrow', index=False)
+                                # 新文件需要转换前复权
+                                stocks_to_convert.append(file_path.stem)
                         except Exception as e:
                             print(f"    保存 {file_path.name} 数据失败: {e}")
                             failed_stocks.append((file_path.stem, str(e)))
+                    
+                    # 批量转换前复权数据（增量更新）
+                    if stocks_to_convert and self.convert_hfq_to_qfq:
+                        print(f"  转换 {len(stocks_to_convert)} 只股票的前复权数据（增量更新）...")
+                        self._batch_convert_to_qfq(stocks_to_convert)
+                    
                     batch_data_to_save.clear()
                 
                 # 限流：每批次之间等待时间
                 # 计算公式：150批次 × 5并发 / 60秒 ≈ 12.5批/秒
                 # 每批等待：60/150 ≈ 0.4秒，实际约750次/分钟
                 time.sleep(0.4)
+
+        # 最后进行一次完整的前复权数据检查和补充（确保数据完整性）
+        if self.convert_hfq_to_qfq:
+            print("\n" + "=" * 60)
+            print("检查前复权数据完整性...")
+            print("=" * 60)
+            self._sync_qfq_data()
 
         self._generate_download_report(
             data_type='股票日K线(后复权)',
@@ -277,6 +402,151 @@ class QuantDataManager:
             empty_stocks=empty_stocks,
             failed_stocks=failed_stocks
         )
+    
+    def _batch_convert_to_qfq(self, stock_list: List[str], max_workers: int = 4):
+        """
+        批量转换后复权数据为前复权数据（增量更新）
+        
+        Args:
+            stock_list: 需要转换的股票代码列表
+            max_workers: 最大并发线程数
+        """
+        if not self.convert_hfq_to_qfq:
+            return
+        
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        
+        qfq_dir = self.paths['stock_daily_qfq']
+        qfq_dir.mkdir(parents=True, exist_ok=True)
+        
+        success_count = 0
+        failed_count = 0
+        
+        def convert_worker(ts_code: str):
+            """转换工作函数"""
+            try:
+                # 调用转换函数
+                df_qfq = self.convert_hfq_to_qfq(ts_code, str(self.data_center_path))
+                
+                if df_qfq is not None and not df_qfq.empty:
+                    # 保存前复权数据
+                    qfq_file = qfq_dir / f"{ts_code}.parquet"
+                    
+                    # 增量更新：如果文件已存在，合并数据
+                    if qfq_file.exists():
+                        try:
+                            existing_df = pd.read_parquet(qfq_file, engine='pyarrow')
+                            if not existing_df.empty:
+                                # 合并数据并去重
+                                combined_df = pd.concat([existing_df, df_qfq], ignore_index=True)
+                                combined_df = combined_df.drop_duplicates(subset=['ts_code', 'trade_date']).sort_values('trade_date')
+                                combined_df.to_parquet(qfq_file, engine='pyarrow', index=False)
+                            else:
+                                df_qfq.to_parquet(qfq_file, engine='pyarrow', index=False)
+                        except:
+                            # 如果读取失败，直接覆盖
+                            df_qfq.to_parquet(qfq_file, engine='pyarrow', index=False)
+                    else:
+                        df_qfq.to_parquet(qfq_file, engine='pyarrow', index=False)
+                    
+                    return {'ts_code': ts_code, 'status': 'success'}
+                else:
+                    return {'ts_code': ts_code, 'status': 'empty'}
+            except Exception as e:
+                return {'ts_code': ts_code, 'status': 'error', 'message': str(e)}
+        
+        # 并发转换
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(convert_worker, ts_code): ts_code for ts_code in stock_list}
+            
+            for future in as_completed(futures):
+                result = future.result()
+                if result['status'] == 'success':
+                    success_count += 1
+                else:
+                    failed_count += 1
+                    if result['status'] == 'error':
+                        print(f"    ⚠️  转换 {result['ts_code']} 失败: {result.get('message', '未知错误')}")
+        
+        if success_count > 0:
+            print(f"  ✅ 成功转换 {success_count} 只股票的前复权数据")
+        if failed_count > 0:
+            print(f"  ⚠️  {failed_count} 只股票转换失败或数据为空")
+    
+    def _sync_qfq_data(self):
+        """
+        同步前复权数据：检查所有后复权文件，确保对应的前复权文件存在且最新
+        只处理缺失或需要更新的文件，实现增量更新
+        """
+        if not self.convert_hfq_to_qfq:
+            return
+        
+        hfq_dir = self.paths['stock_daily_hfq']
+        qfq_dir = self.paths['stock_daily_qfq']
+        qfq_dir.mkdir(parents=True, exist_ok=True)
+        
+        if not hfq_dir.exists():
+            return
+        
+        print("检查前复权数据完整性...")
+        
+        # 获取所有后复权文件
+        hfq_files = list(hfq_dir.glob("*.parquet"))
+        total_count = len(hfq_files)
+        
+        if total_count == 0:
+            print("  无后复权数据文件")
+            return
+        
+        # 检查哪些需要转换或更新
+        stocks_to_convert = []
+        up_to_date_count = 0
+        
+        for hfq_file in hfq_files:
+            ts_code = hfq_file.stem
+            qfq_file = qfq_dir / f"{ts_code}.parquet"
+            
+            need_convert = False
+            
+            if not qfq_file.exists():
+                # 前复权文件不存在
+                need_convert = True
+            else:
+                # 检查日期是否最新
+                try:
+                    # 读取后复权文件的最新日期
+                    hfq_df = pd.read_parquet(hfq_file, engine='pyarrow')
+                    if hfq_df.empty or 'trade_date' not in hfq_df.columns:
+                        continue
+                    
+                    hfq_latest_date = hfq_df['trade_date'].max()
+                    
+                    # 读取前复权文件的最新日期
+                    qfq_df = pd.read_parquet(qfq_file, engine='pyarrow')
+                    if qfq_df.empty or 'trade_date' not in qfq_df.columns:
+                        need_convert = True
+                    else:
+                        qfq_latest_date = qfq_df['trade_date'].max()
+                        # 如果后复权数据更新了，需要重新转换
+                        if hfq_latest_date > qfq_latest_date:
+                            need_convert = True
+                        else:
+                            up_to_date_count += 1
+                except Exception as e:
+                    # 读取失败，重新转换
+                    need_convert = True
+            
+            if need_convert:
+                stocks_to_convert.append(ts_code)
+        
+        if stocks_to_convert:
+            print(f"  发现 {len(stocks_to_convert)} 只股票需要转换/更新前复权数据")
+            print(f"  {up_to_date_count} 只股票前复权数据已是最新")
+            
+            # 批量转换（使用较小的并发数，避免内存压力）
+            self._batch_convert_to_qfq(stocks_to_convert, max_workers=4)
+        else:
+            print(f"  ✅ 所有 {total_count} 只股票的前复权数据已是最新")
     
     def _fetch_income_worker(self, ts_code: str) -> Dict[str, Any]:
         """并发工作函数：获取单只股票的利润表数据"""
@@ -1397,6 +1667,141 @@ class QuantDataManager:
             import traceback
             traceback.print_exc()
     
+    def update_stock_moneyflow(self, start_date: str = None, end_date: str = None, 
+                              stock_list: List[str] = None, batch_size: int = 150, max_workers: int = 5):
+        """
+        更新股票资金流向数据（moneyflow）- 支持高并发下载和增量更新
+        
+        Args:
+            start_date: 开始日期 (YYYYMMDD)
+            end_date: 结束日期 (YYYYMMDD)
+            stock_list: 股票代码列表，如果为None则获取所有股票
+            batch_size: 批处理大小 (用于分批提交任务到线程池)
+            max_workers: 最大并发线程数
+        """
+        print("=" * 60)
+        print("开始更新股票资金流向数据（高并发模式）")
+        print(f"最大并发线程数: {max_workers}")
+        print("注意: 已限制API调用频率，约750次/分钟")
+        print("=" * 60)
+        
+        # 确保目录存在
+        self.paths['stock_moneyflow'].mkdir(parents=True, exist_ok=True)
+        
+        # 获取股票列表
+        if stock_list is None:
+            print("获取股票列表...")
+            stock_basic_df = self._safe_api_call(self.pro.stock_basic, 
+                                            exchange='', 
+                                            list_status='L', 
+                                            fields='ts_code,list_date')
+            if stock_basic_df is None:
+                print("获取股票列表失败")
+                return
+            stock_list = stock_basic_df['ts_code'].tolist()
+            stock_info = dict(zip(stock_basic_df['ts_code'], stock_basic_df['list_date']))
+        else:
+            # 如果提供了股票列表，也需要获取上市日期信息
+            stock_basic_df = self._safe_api_call(self.pro.stock_basic, 
+                                            ts_code=','.join(stock_list),
+                                            fields='ts_code,list_date')
+            stock_info = dict(zip(stock_basic_df['ts_code'], stock_basic_df['list_date'])) if stock_basic_df is not None else {}
+        
+        print(f"共需更新 {len(stock_list)} 只股票")
+        
+        if end_date is None:
+            end_date = datetime.now().strftime('%Y%m%d')
+        
+        up_to_date_stocks = []
+        success_stocks = []
+        empty_stocks = []
+        failed_stocks = []
+        batch_data_to_save = []
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            for batch_start in range(0, len(stock_list), batch_size):
+                batch_end = min(batch_start + batch_size, len(stock_list))
+                batch_stocks = stock_list[batch_start:batch_end]
+                
+                print(f"\n提交批次 {batch_start//batch_size + 1}: 股票 {batch_start+1}-{batch_end} ({len(batch_stocks)} 只)")
+                
+                futures = {executor.submit(self._fetch_moneyflow_worker, ts_code, start_date, end_date, stock_info): ts_code for ts_code in batch_stocks}
+                
+                for future in as_completed(futures):
+                    try:
+                        result = future.result()
+                        ts_code = result['ts_code']
+                        status = result['status']
+
+                        if status == 'success':
+                            batch_data_to_save.append(result['data'])
+                            success_stocks.append(ts_code)
+                        elif status == 'up_to_date':
+                            up_to_date_stocks.append(ts_code)
+                        elif status == 'api_empty':
+                            empty_stocks.append(ts_code)
+                        elif status == 'error':
+                            failed_stocks.append((ts_code, result['message']))
+                    except Exception as e:
+                        # Future itself might fail
+                        failed_stocks.append((futures[future], str(e)))
+
+                if batch_data_to_save:
+                    print(f"  批量保存 {len(batch_data_to_save)} 只股票的数据...")
+                    for df, file_path in batch_data_to_save:
+                        try:
+                            # 确保数据有必要的列
+                            if df.empty:
+                                continue
+                            
+                            # 检查必需的列是否存在
+                            required_cols = ['ts_code', 'trade_date']
+                            missing_cols = [col for col in required_cols if col not in df.columns]
+                            if missing_cols:
+                                print(f"    ⚠️  {file_path.name}: 缺少必需列 {missing_cols}，跳过保存")
+                                failed_stocks.append((file_path.stem, f"缺少列: {missing_cols}"))
+                                continue
+                            
+                            if file_path.exists():
+                                try:
+                                    existing_df = pd.read_parquet(file_path, engine='pyarrow')
+                                    if not existing_df.empty:
+                                        # 确保现有数据也有必需的列
+                                        if all(col in existing_df.columns for col in required_cols):
+                                            combined_df = pd.concat([existing_df, df], ignore_index=True)
+                                            combined_df = combined_df.drop_duplicates(subset=['ts_code', 'trade_date']).sort_values('trade_date')
+                                            combined_df.to_parquet(file_path, engine='pyarrow', index=False)
+                                        else:
+                                            # 如果现有文件格式不对，直接覆盖
+                                            df.to_parquet(file_path, engine='pyarrow', index=False)
+                                    else:
+                                        # 现有文件为空，直接保存新数据
+                                        df.to_parquet(file_path, engine='pyarrow', index=False)
+                                except Exception as e:
+                                    # 如果读取现有文件失败，直接覆盖
+                                    print(f"    读取现有文件失败，将覆盖: {file_path.name}")
+                                    df.to_parquet(file_path, engine='pyarrow', index=False)
+                            else:
+                                df.to_parquet(file_path, engine='pyarrow', index=False)
+                        except Exception as e:
+                            print(f"    保存 {file_path.name} 数据失败: {e}")
+                            failed_stocks.append((file_path.stem, str(e)))
+                    batch_data_to_save.clear()
+                
+                # 限流：每批次之间等待时间
+                # 计算公式：150批次 × 5并发 / 60秒 ≈ 12.5批/秒
+                # 每批等待：60/150 ≈ 0.4秒，实际约750次/分钟
+                time.sleep(0.4)
+
+        self._generate_download_report(
+            data_type='股票资金流向',
+            total_count=len(stock_list),
+            success_count=len(success_stocks),
+            up_to_date_count=len(up_to_date_stocks),
+            empty_stocks=empty_stocks,
+            failed_stocks=failed_stocks
+        )
+    
     def update_daily_basic(self, start_date: str = None, end_date: str = None):
         """
         更新股票每日基础指标
@@ -1466,6 +1871,9 @@ class QuantDataManager:
             
             # 合并所有数据
             df = pd.concat(all_data, ignore_index=True)
+            
+            # 确保目录存在
+            file_path.parent.mkdir(parents=True, exist_ok=True)
             
             # 保存数据
             if file_path.exists():
@@ -1570,6 +1978,25 @@ class QuantDataManager:
                     return max(latest_dates)
                 return None
             
+            elif data_type == '股票资金流向':
+                # 获取所有资金流向文件的最新日期
+                moneyflow_dir = self.paths['stock_moneyflow']
+                if not moneyflow_dir.exists():
+                    return None
+                
+                latest_dates = []
+                for file_path in moneyflow_dir.glob("*.parquet"):
+                    try:
+                        latest_date = self._get_latest_date(file_path, 'trade_date')
+                        if latest_date:
+                            latest_dates.append(latest_date)
+                    except:
+                        continue
+                
+                if latest_dates:
+                    return max(latest_dates)
+                return None
+            
         except Exception as e:
             print(f"获取最新日期失败: {e}")
             return None
@@ -1638,35 +2065,47 @@ class QuantDataManager:
                 for ts_code, message in failed_stocks:
                     f.write(f"{ts_code}: {message}\n")
 
-    def update_all(self, start_date: str = None, end_date: str = None):
+    def update_all(self, start_date: str = None, end_date: str = None, 
+                   include_sw_member: bool = False):
         """
         更新所有数据（不包含财务三大表）
         
         Args:
             start_date: 开始日期 (YYYYMMDD)
             end_date: 结束日期 (YYYYMMDD)
+            include_sw_member: 是否包含申万行业成分股数据（可选，默认False，因为数据量大且更新不频繁）
         
         注意：
             - 财务三大表（利润表、资产负债表、现金流量表）请使用 download_financial_slow.py 脚本单独下载
             - 该脚本提供更稳定的下载机制，适合大批量数据获取
+            - 申万行业成分股数据更新较慢，默认不包含，可通过 include_sw_member=True 启用
         """
         print("=" * 80)
         print("开始更新所有数据（不含财务三大表）")
         print("=" * 80)
         
         # 更新各种数据
-        print("步骤1: 更新基础数据...")
+        print("\n步骤1: 更新基础数据...")
         self.update_stock_basic()
         self.update_risk_free_rate(start_date, end_date)
         self.update_sw_industry_daily(start_date, end_date)
-        # 注意：申万行业成分股数据可单独运行 update_sw_industry_member_latest() 或 update_sw_l2_member_history()
         self.update_index_daily(None, start_date, end_date)
         self.update_index_constituents()
-        self.update_stock_daily_hfq(start_date, end_date)
         
-        print("\n步骤2: 更新因子模型原材料...")
+        print("\n步骤2: 更新股票核心数据...")
+        self.update_stock_daily_hfq(start_date, end_date)  # 包含自动前复权转换
+        self.update_stock_moneyflow(start_date, end_date)  # 🆕 资金流向数据
+        
+        print("\n步骤3: 更新因子模型原材料...")
         self.update_daily_basic(start_date, end_date)
         # 注意：财务指标数据请使用专门的程序单独更新（每季度一次）
+        
+        # 可选：申万行业成分股数据（数据量大，更新较慢）
+        if include_sw_member:
+            print("\n步骤4: 更新申万行业成分股数据（可选）...")
+            print("  注意：此步骤可能需要较长时间")
+            self.update_sw_industry_member_latest()
+            # update_sw_l2_member_history() 数据量更大，建议单独运行
         
         print("\n" + "=" * 80)
         print("✅ 数据更新完成！")
@@ -1676,7 +2115,11 @@ class QuantDataManager:
         print("  1. 如需更新财务三大表，请运行:")
         print("     python download_financial_slow.py")
         print("")
-        print("  2. 构建Fama-French五因子:")
+        print("  2. 如需更新申万行业成分股数据，可单独运行:")
+        print("     manager.update_sw_industry_member_latest()  # 最新成分股")
+        print("     manager.update_sw_l2_member_history()      # L2历史映射")
+        print("")
+        print("  3. 构建Fama-French五因子:")
         print("     python build_ff5_factors_monthly_ttm.py")
         print("=" * 80)
 
@@ -1691,46 +2134,66 @@ def main():
     data_center_path = input("请输入数据中心路径 (直接回车使用当前目录下的quant_data_center): ").strip()
     if not data_center_path:
         data_center_path = None
+    else:
+        # 验证路径
+        test_path = Path(data_center_path)
+        if not test_path.is_absolute():
+            # 如果是相对路径，转换为绝对路径
+            data_center_path = str(Path.cwd() / data_center_path)
+        
+        # 检查路径是否合理（避免输入单个字符如"1"）
+        if len(data_center_path) < 5 or data_center_path.endswith('/1') or data_center_path.endswith('\\1'):
+            print(f"⚠️  警告: 路径 '{data_center_path}' 看起来不正确")
+            print(f"   默认路径应该是: {Path.cwd() / 'quant_data_center'}")
+            confirm = input("   是否继续使用此路径? (y/n): ").strip().lower()
+            if confirm != 'y':
+                print("已取消，使用默认路径")
+                data_center_path = None
     
     # 创建数据管理器（自动从config.py读取Token）
     try:
         manager = QuantDataManager(data_center_path)
+        print(f"\n✅ 数据中心路径: {manager.data_center_path}")
+        print(f"   如果路径不正确，请按 Ctrl+C 退出并重新运行\n")
         
         # 选择更新模式
         print("\n请选择更新模式:")
         print("1. 更新所有数据")
         print("2. 更新股票日K线数据")
-        print("3. 更新指数成分股数据")
-        print("4. 更新无风险利率")
-        print("5. 更新申万行业分类")
-        print("6. 更新申万行业成分股（最新数据）")
-        print("7. 更新申万L2个股历史映射")
-        print("8. 更新指数日K线")
-        print("9. 更新股票基础信息")
-        print("10. 更新股票每日基础指标")
+        print("3. 更新股票资金流向数据")
+        print("4. 更新指数成分股数据")
+        print("5. 更新无风险利率")
+        print("6. 更新申万行业分类")
+        print("7. 更新申万行业成分股（最新数据）")
+        print("8. 更新申万L2个股历史映射")
+        print("9. 更新指数日K线")
+        print("10. 更新股票基础信息")
+        print("11. 更新股票每日基础指标")
         # 注意：财务指标数据请使用专门的程序单独更新（每季度一次）
         
-        choice = input("请输入选择 (1-10): ").strip()
+        choice = input("请输入选择 (1-11): ").strip()
         
         if choice == '1':
             manager.update_all()
         elif choice == '2':
             manager.update_stock_daily_hfq()
         elif choice == '3':
-            manager.update_index_constituents()
+            manager.update_stock_moneyflow()
         elif choice == '4':
-            manager.update_risk_free_rate()
+            manager.update_index_constituents()
         elif choice == '5':
-            manager.update_sw_industry_daily()
+            manager.update_risk_free_rate()
         elif choice == '6':
-            manager.update_sw_industry_member_latest()
+            manager.update_sw_industry_daily()
         elif choice == '7':
-            manager.update_sw_l2_member_history()
+            manager.update_sw_industry_member_latest()
         elif choice == '8':
-            manager.update_index_daily()
+            manager.update_sw_l2_member_history()
         elif choice == '9':
-            manager.update_stock_basic()
+            manager.update_index_daily()
         elif choice == '10':
+            manager.update_stock_basic()
+        elif choice == '11':
             manager.update_daily_basic()
         else:
             print("无效选择")

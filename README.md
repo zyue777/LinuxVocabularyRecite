@@ -15,6 +15,10 @@
 - ✅ **高效存储**: Parquet列式存储，查询速度快
 - ✅ **增量更新**: 智能检测，只下载新数据
 - ✅ **开箱即用**: 配置简单，文档完善
+- 🆕 **资金流向数据**: 个股资金流向（小单、中单、大单、特大单）
+- 🆕 **市场元数据**: 创业板、科创板等市场分类快速筛选
+- 🆕 **前复权转换**: 实时转换后复权为前复权，无需额外存储
+- 🆕 **数据质量保障**: 完整度检查、去重、异常值检测
 
 ---
 
@@ -49,8 +53,12 @@
     ├── stock/
     │   ├── daily_hfq/              # 日K线-后复权 (5,422只股票)
     │   ├── daily_basic/            # 每日基础指标 (市值、PE/PB)
+    │   ├── moneyflow/              # 资金流向数据 🆕 (5,400+只股票)
     │   ├── fina_indicator/         # 财务指标 (5,444只)
     │   └── financial_tables/       # 财务三大表
+    ├── market_metadata/            # 市场元数据 🆕
+    │   ├── chinext_stocks.parquet  # 创业板股票标记
+    │   └── stock_market_map.parquet # 市场分类映射
     │       ├── income/             # 利润表 (5,444只)
     │       ├── balancesheet/       # 资产负债表 (5,444只)
     │       └── cashflow/           # 现金流量表 (5,444只) ⭐v2.0核心
@@ -100,16 +108,32 @@ export TUSHARE_TOKEN=your_token_here
 ### 3. 数据完整性检查
 
 ```bash
-python check_data_completeness.py
+# 基础状态检查
+python check_data_status.py
+
+# 完整质量检查（包含完整度、去重、异常值）
+python check_data_status.py --full
+
+# 完整检查并自动修复重复数据
+python check_data_status.py --full --auto-fix
 ```
 
-**预期输出**:
-```
-✅ 所有数据完整性检查通过！
-总体完整度: 7/7 (100.0%)
+**检查功能**:
+- ✅ 数据最新日期检查
+- 🆕 文件数量完整性检查
+- 🆕 交易日数据断层检测
+- 🆕 重复数据检测与自动去重
+- 🆕 异常值检测（负数、零值等）
+
+### 4. 生成市场元数据（可选）
+
+```bash
+python -c "from data_utils import generate_market_metadata; generate_market_metadata()"
 ```
 
-### 4. 构建Fama-French五因子 (v2.0)
+这将生成创业板股票标记和市场分类映射文件，用于快速筛选不同市场的股票。
+
+### 5. 构建Fama-French五因子 (v2.0)
 
 ```bash
 python build_ff5_factors_monthly_ttm.py
@@ -187,17 +211,81 @@ python build_ff5_factors_monthly_ttm.py
 
 ---
 
-### 4️⃣ 数据完整性检查 (v2.0优化)
+### 4️⃣ 资金流向数据 🆕
+
+**绝对路径**: `quant_data_center/stock/moneyflow/{ts_code}.parquet`  
+**用途**: 个股资金流向分析，包含小单、中单、大单、特大单的买入卖出金额
+
+**关键字段**:
+- `buy_sm_amount`, `sell_sm_amount`: 小单买入/卖出金额
+- `buy_lg_amount`, `sell_lg_amount`: 大单买入/卖出金额
+- `buy_elg_amount`, `sell_elg_amount`: 特大单买入/卖出金额
+- `net_mf_amount`: 净流入金额
+
+**使用示例**:
+```python
+import pandas as pd
+from data_utils import get_chinext_stocks
+
+# 读取资金流向数据
+df_mf = pd.read_parquet('quant_data_center/stock/moneyflow/000001.SZ.parquet')
+
+# 计算散户净流入（小单）
+df_mf['retail_net'] = df_mf['buy_sm_amount'] - df_mf['sell_sm_amount']
+
+# 批量读取创业板资金流向
+chinext_stocks = get_chinext_stocks()
+for code in chinext_stocks[:10]:
+    df = pd.read_parquet(f'quant_data_center/stock/moneyflow/{code}.parquet')
+```
+
+**更新数据**:
+```python
+from download_data_manager import QuantDataManager
+manager = QuantDataManager()
+manager.update_stock_moneyflow()  # 增量更新
+```
+
+---
+
+### 5️⃣ 市场元数据与工具函数 🆕
+
+**市场元数据**:
+- `market_metadata/chinext_stocks.parquet`: 创业板股票标记
+- `market_metadata/stock_market_map.parquet`: 市场分类映射
+
+**工具函数** (`data_utils.py`):
+- `get_chinext_stocks()`: 获取创业板股票列表
+- `filter_stocks_by_market()`: 按市场筛选股票
+- `convert_hfq_to_qfq()`: 后复权转前复权（实时转换）
+- `generate_market_metadata()`: 生成市场元数据
+
+**使用示例**:
+```python
+from data_utils import get_chinext_stocks, convert_hfq_to_qfq
+
+# 获取创业板股票
+chinext_list = get_chinext_stocks()
+print(f"创业板股票: {len(chinext_list)} 只")
+
+# 前复权转换
+df_qfq = convert_hfq_to_qfq('000001.SZ')
+```
+
+---
+
+### 6️⃣ 数据完整性检查 (v2.0优化 + 新增功能)
 
 ```bash
 python check_data_completeness.py
 ```
 
-**v2.0新增检查**:
-- ✅ 现金流量表 `n_cashflow_act` 字段（RMW因子）
-- ✅ 财务指标表 `tangible_asset` 字段（CMA因子）
-- ✅ 字段覆盖率检查
-- ✅ 数据时间范围验证
+**检查功能**:
+- ✅ 数据最新日期检查（保留原有功能）
+- 🆕 文件数量完整性检查（股票基础信息 vs 日K线文件数）
+- 🆕 交易日数据断层检测（采样检查）
+- 🆕 重复数据检测与自动去重（基于ts_code + trade_date）
+- 🆕 异常值检测（价格为0或负数、成交量为负数等）
 
 **输出示例**:
 ```
@@ -587,6 +675,7 @@ logging.basicConfig(level=logging.DEBUG)
 
 | 版本 | 日期 | 主要更新 |
 |------|------|---------|
+| **v2.1** | 2025-11-10 | 🆕 新增资金流向数据（moneyflow）<br>🆕 新增市场元数据（创业板标记等）<br>🆕 前复权转换功能<br>🆕 数据质量检查升级（完整度、去重、异常值） |
 | **v2.0** | 2025-10-28 | ⭐ FF5因子优化（OCF+NOA）<br>⭐ 新增数据完整性检查v2.0<br>⭐ 完善文档体系 |
 | v1.1 | 2025-10-27 | 新增数据词典<br>优化数据结构 |
 | v1.0 | 2025-10-26 | 初始版本<br>基础数据下载和FF5构建 |
@@ -618,8 +707,8 @@ logging.basicConfig(level=logging.DEBUG)
 
 *Built with ❤️ for Quantitative Research*
 
-**最后更新**: 2025-10-28  
-**数据版本**: v2.0  
+**最后更新**: 2025-11-10  
+**数据版本**: v2.1  
 **项目状态**: ✅ 生产就绪
 
 </div>
