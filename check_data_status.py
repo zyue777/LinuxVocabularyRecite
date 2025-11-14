@@ -10,7 +10,7 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Optional, Dict, List, Tuple
+from typing import Optional, Dict, List, Tuple, Any
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -20,13 +20,14 @@ try:
     TUSHARE_AVAILABLE = True
 except ImportError:
     TUSHARE_AVAILABLE = False
+    ts = None  # type: ignore
     print("警告: Tushare未安装，数据断层检查将使用简化逻辑")
 
 
 class DataStatusChecker:
     """数据状态检查器"""
     
-    def __init__(self, data_center_path: str = None):
+    def __init__(self, data_center_path: Optional[str] = None):
         """
         初始化数据状态检查器
         
@@ -77,7 +78,7 @@ class DataStatusChecker:
             return max(latest_dates)
         return None
     
-    def check_stock_basic(self) -> Dict[str, any]:
+    def check_stock_basic(self) -> Dict[str, Any]:
         """检查股票基础信息"""
         file_path = self.data_center_path / "stock_basic.parquet"
         
@@ -100,7 +101,7 @@ class DataStatusChecker:
         
         return status
     
-    def check_stock_daily_hfq(self) -> Dict[str, any]:
+    def check_stock_daily_hfq(self) -> Dict[str, Any]:
         """检查股票日K线（后复权）"""
         dir_path = self.data_center_path / "stock" / "daily_hfq"
         
@@ -146,7 +147,7 @@ class DataStatusChecker:
         
         return status
     
-    def check_daily_basic(self) -> Dict[str, any]:
+    def check_daily_basic(self) -> Dict[str, Any]:
         """检查股票每日基础指标"""
         file_path = self.data_center_path / "stock" / "daily_basic" / "daily_basic_all.parquet"
         
@@ -170,7 +171,7 @@ class DataStatusChecker:
         
         return status
     
-    def check_fina_indicator(self) -> Dict[str, any]:
+    def check_fina_indicator(self) -> Dict[str, Any]:
         """检查股票财务指标"""
         dir_path = self.data_center_path / "stock" / "fina_indicator"
         
@@ -192,7 +193,7 @@ class DataStatusChecker:
         
         return status
     
-    def check_index_daily(self) -> Dict[str, any]:
+    def check_index_daily(self) -> Dict[str, Any]:
         """检查指数日K线"""
         dir_path = self.data_center_path / "index" / "daily"
         
@@ -229,7 +230,7 @@ class DataStatusChecker:
         
         return status
     
-    def check_index_constituents(self) -> Dict[str, any]:
+    def check_index_constituents(self) -> Dict[str, Any]:
         """检查指数成分股"""
         dir_path = self.data_center_path / "index" / "constituents"
         
@@ -266,7 +267,7 @@ class DataStatusChecker:
         
         return status
     
-    def check_risk_free_rate(self) -> Dict[str, any]:
+    def check_risk_free_rate(self) -> Dict[str, Any]:
         """检查无风险利率"""
         file_path = self.data_center_path / "factors" / "risk_free" / "rfr_daily.parquet"
         
@@ -290,7 +291,7 @@ class DataStatusChecker:
         
         return status
     
-    def check_ff3_factors(self) -> Dict[str, any]:
+    def check_ff3_factors(self) -> Dict[str, Any]:
         """检查Fama-French三因子"""
         file_path = self.data_center_path / "factors" / "fama_french_3" / "ff_3_factors_daily.parquet"
         
@@ -314,7 +315,7 @@ class DataStatusChecker:
         
         return status
     
-    def check_ff5_factors(self) -> Dict[str, any]:
+    def check_ff5_factors(self) -> Dict[str, Any]:
         """检查Fama-French五因子"""
         file_path = self.data_center_path / "factors" / "fama_french_5" / "ff_5_factors_daily.parquet"
         
@@ -338,7 +339,7 @@ class DataStatusChecker:
         
         return status
     
-    def check_ch3_factors(self) -> Dict[str, any]:
+    def check_ch3_factors(self) -> Dict[str, Any]:
         """检查中国版三因子（CH-3）"""
         file_path = self.data_center_path / "factors" / "ch_3_factors" / "ch_3_factors_daily.parquet"
         
@@ -362,7 +363,7 @@ class DataStatusChecker:
         
         return status
     
-    def check_custom_factors(self) -> Dict[str, any]:
+    def check_custom_factors(self) -> Dict[str, Any]:
         """检查自定义因子（UMD、LIQ）"""
         umd_path = self.data_center_path / "factors" / "custom" / "umd_daily.parquet"
         liq_path = self.data_center_path / "factors" / "custom" / "liq_daily.parquet"
@@ -403,7 +404,7 @@ class DataStatusChecker:
         
         return status
     
-    def check_sw_industry(self) -> Dict[str, any]:
+    def check_sw_industry(self) -> Dict[str, Any]:
         """检查申万行业数据"""
         daily_path = self.data_center_path / "classification" / "industry_sw" / "sw_l1_daily.parquet"
         member_path = self.data_center_path / "classification" / "industry_sw" / "industry_sw_member.parquet"
@@ -432,7 +433,7 @@ class DataStatusChecker:
         
         return status
     
-    def check_stock_moneyflow(self) -> Dict[str, any]:
+    def check_stock_moneyflow(self) -> Dict[str, Any]:
         """检查股票资金流向数据"""
         dir_path = self.data_center_path / "stock" / "moneyflow"
         
@@ -480,7 +481,7 @@ class DataStatusChecker:
         
         return status
     
-    def check_qfq_conversion(self) -> Dict[str, any]:
+    def check_qfq_conversion(self) -> Dict[str, Any]:
         """检查前复权转换功能"""
         status = {
             'name': '前复权转换功能',
@@ -519,7 +520,7 @@ class DataStatusChecker:
         
         return status
     
-    def check_all(self) -> List[Dict[str, any]]:
+    def check_all(self) -> List[Dict[str, Any]]:
         """检查所有数据状态"""
         print("\n" + "="*80)
         print("开始检查数据状态...")
@@ -553,7 +554,7 @@ class DataStatusChecker:
         
         return all_status
     
-    def print_status(self, status_list: List[Dict[str, any]]):
+    def print_status(self, status_list: List[Dict[str, Any]]):
         """打印数据状态"""
         print("\n" + "="*80)
         print("📊 数据中心状态报告")
@@ -660,7 +661,7 @@ class DataStatusChecker:
         print("✅ 数据状态检查完成")
         print("="*80)
     
-    def check_data_completeness(self) -> Dict[str, any]:
+    def check_data_completeness(self) -> Dict[str, Any]:
         """
         数据完整度检查
         检查交易日数据断层、文件是否齐全等
@@ -749,7 +750,7 @@ class DataStatusChecker:
                 
                 # 获取A股交易日历（用于判断真正的数据缺失）
                 trade_calendar = None
-                if TUSHARE_AVAILABLE:
+                if TUSHARE_AVAILABLE and ts is not None:
                     try:
                         # 尝试从config获取token
                         try:
@@ -758,7 +759,6 @@ class DataStatusChecker:
                                 ts.set_token(config.TUSHARE_TOKEN)
                         except:
                             pass
-                        
                         pro = ts.pro_api()
                         # 获取最近5年的交易日历
                         end_date = datetime.now().strftime('%Y%m%d')
@@ -860,7 +860,7 @@ class DataStatusChecker:
         
         return completeness_report
     
-    def check_duplicates_and_deduplicate(self, auto_fix: bool = False) -> Dict[str, any]:
+    def check_duplicates_and_deduplicate(self, auto_fix: bool = False) -> Dict[str, Any]:
         """
         数据去重检查与清洗
         
@@ -1017,7 +1017,7 @@ class DataStatusChecker:
         
         return dedup_report
     
-    def check_anomalies(self) -> Dict[str, any]:
+    def check_anomalies(self) -> Dict[str, Any]:
         """
         异常值检测
         检查负数、零值等明显异常

@@ -169,17 +169,24 @@ class QuantDataManager:
         try:
             file_path = self.paths['stock_daily_hfq'] / f"{ts_code}.parquet"
             
+            # 获取本地最新日期
+            local_latest_date = self._get_latest_date(file_path, 'trade_date')
+            
+            # ✅ 优化：先检查本地数据是否已到 Tushare 最新交易日
+            if local_latest_date and local_latest_date >= end_date:
+                return {'ts_code': ts_code, 'status': 'up_to_date'}
+            
             # 确定开始日期
             start_date_actual = start_date
-            if start_date is None:
-                latest_date = self._get_latest_date(file_path, 'trade_date')
-                if latest_date:
-                    latest_dt = datetime.strptime(latest_date, '%Y%m%d')
+            if start_date is None or start_date == '':
+                if local_latest_date:
+                    latest_dt = datetime.strptime(local_latest_date, '%Y%m%d')
                     start_date_actual = (latest_dt + timedelta(days=1)).strftime('%Y%m%d')
                 else:
                     list_date = stock_info.get(ts_code)
                     start_date_actual = list_date if list_date and list_date != 'None' else '19900101'
             
+            # 再次检查（防止计算后的日期超过 end_date）
             if start_date_actual >= end_date:
                 return {'ts_code': ts_code, 'status': 'up_to_date'}
 
@@ -202,13 +209,17 @@ class QuantDataManager:
         try:
             file_path = self.paths['stock_moneyflow'] / f"{ts_code}.parquet"
             
-            # 确定开始日期（增量更新逻辑）
-            # 优先使用现有数据的最新日期，确保不会重复下载
-            latest_date = self._get_latest_date(file_path, 'trade_date')
+            # 获取本地最新日期
+            local_latest_date = self._get_latest_date(file_path, 'trade_date')
             
-            if latest_date:
+            # ✅ 优化：先检查本地数据是否已到 Tushare 最新交易日
+            if local_latest_date and local_latest_date >= end_date:
+                return {'ts_code': ts_code, 'status': 'up_to_date'}
+            
+            # 确定开始日期（增量更新逻辑）
+            if local_latest_date:
                 # 如果文件存在且有数据，从最新日期的下一天开始
-                latest_dt = datetime.strptime(latest_date, '%Y%m%d')
+                latest_dt = datetime.strptime(local_latest_date, '%Y%m%d')
                 data_start_date = (latest_dt + timedelta(days=1)).strftime('%Y%m%d')
             else:
                 # 如果文件不存在，使用上市日期或默认日期
@@ -216,11 +227,12 @@ class QuantDataManager:
                 data_start_date = list_date if list_date and list_date != 'None' else '20100101'  # 资金流数据从2010年开始
             
             # 如果用户指定了start_date，取两者中的较大值（确保不重复下载）
-            if start_date is not None:
-                start_date_actual = max(start_date, data_start_date) if latest_date else start_date
+            if start_date is not None and start_date != '':
+                start_date_actual = max(start_date, data_start_date) if local_latest_date else start_date
             else:
                 start_date_actual = data_start_date
             
+            # 再次检查（防止计算后的日期超过 end_date）
             if start_date_actual >= end_date:
                 return {'ts_code': ts_code, 'status': 'up_to_date'}
 
@@ -267,6 +279,22 @@ class QuantDataManager:
         print("注意: 已限制API调用频率，约750次/分钟")
         print("=" * 60)
         
+        # ✅ 优化：先获取 Tushare 最新交易日（避免周末/节假日无效请求）
+        if end_date is None:
+            print("获取 Tushare 最新交易日...")
+            cal_df = self._safe_api_call(self.pro.trade_cal,
+                                        exchange='SSE',
+                                        is_open='1',
+                                        start_date=(datetime.now() - timedelta(days=10)).strftime('%Y%m%d'),
+                                        end_date=datetime.now().strftime('%Y%m%d'))
+            
+            if cal_df is None or cal_df.empty:
+                print("⚠️  无法获取交易日历，使用当前日期")
+                end_date = datetime.now().strftime('%Y%m%d')
+            else:
+                end_date = cal_df['cal_date'].max()
+                print(f"✅ Tushare 数据最新到: {end_date}")
+        
         # 获取股票列表
         if stock_list is None:
             print("获取股票列表...")
@@ -286,12 +314,10 @@ class QuantDataManager:
                                             fields='ts_code,list_date')
             stock_info = dict(zip(stock_basic_df['ts_code'], stock_basic_df['list_date'])) if stock_basic_df is not None else {}
         
-        # 类型守护：保证stock_list不是None
+        # 类型守护：保证stock_list和end_date不是None
         assert stock_list is not None
+        assert end_date is not None  # end_date在前面已经确保有值
         print(f"共需更新 {len(stock_list)} 只股票")
-        
-        if end_date is None:
-            end_date = datetime.now().strftime('%Y%m%d')
         
         up_to_date_stocks = []
         success_stocks = []
@@ -1696,6 +1722,22 @@ class QuantDataManager:
         # 确保目录存在
         self.paths['stock_moneyflow'].mkdir(parents=True, exist_ok=True)
         
+        # ✅ 优化：先获取 Tushare 最新交易日（避免周末/节假日无效请求）
+        if end_date is None:
+            print("获取 Tushare 最新交易日...")
+            cal_df = self._safe_api_call(self.pro.trade_cal,
+                                        exchange='SSE',
+                                        is_open='1',
+                                        start_date=(datetime.now() - timedelta(days=10)).strftime('%Y%m%d'),
+                                        end_date=datetime.now().strftime('%Y%m%d'))
+            
+            if cal_df is None or cal_df.empty:
+                print("⚠️  无法获取交易日历，使用当前日期")
+                end_date = datetime.now().strftime('%Y%m%d')
+            else:
+                end_date = cal_df['cal_date'].max()
+                print(f"✅ Tushare 数据最新到: {end_date}")
+        
         # 获取股票列表
         if stock_list is None:
             print("获取股票列表...")
@@ -1715,12 +1757,10 @@ class QuantDataManager:
                                             fields='ts_code,list_date')
             stock_info = dict(zip(stock_basic_df['ts_code'], stock_basic_df['list_date'])) if stock_basic_df is not None else {}
         
-        # 类型守护：保证stock_list不是None
+        # 类型守护：保证stock_list和end_date不是None
         assert stock_list is not None
+        assert end_date is not None  # end_date在前面已经确保有值
         print(f"共需更新 {len(stock_list)} 只股票")
-        
-        if end_date is None:
-            end_date = datetime.now().strftime('%Y%m%d')
         
         up_to_date_stocks = []
         success_stocks = []

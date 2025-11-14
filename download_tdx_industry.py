@@ -402,6 +402,82 @@ class TDXIndustryDownloader:
             import traceback
             traceback.print_exc()
 
+    def fetch_for_single_date(self, trade_date: str, fetch_members: bool = False):
+        """
+        方便调试/测试：仅针对单个交易日获取板块列表（可选择是否获取成分股）
+        """
+        print("=" * 60)
+        print(f"测试模式：获取 {trade_date} 的板块列表 (fetch_members={fetch_members})")
+
+        df_index = self._fetch_tdx_index_batch(trade_date)
+        if df_index is None:
+            print("未能获取到板块列表（可能触发API限制）")
+            return None
+
+        if df_index.empty:
+            print("该日无板块数据")
+            return df_index
+
+        df_index['trade_date'] = trade_date
+        print(f"获取到 {len(df_index)} 个板块，前5条:")
+        print(df_index.head(5).to_string(index=False))
+
+        # 保存到index parquet（增量追加去重）
+        try:
+            if self.index_file_path.exists():
+                existing_df = pd.read_parquet(self.index_file_path, engine='pyarrow')
+                combined_df = pd.concat([existing_df, df_index], ignore_index=True)
+                combined_df = combined_df.drop_duplicates(subset=['ts_code', 'trade_date']).sort_values('trade_date')
+                combined_df.to_parquet(self.index_file_path, engine='pyarrow', index=False)
+                print(f"已将结果追加到: {self.index_file_path}")
+            else:
+                df_index.to_parquet(self.index_file_path, engine='pyarrow', index=False)
+                print(f"已创建文件: {self.index_file_path}")
+        except Exception as e:
+            print(f"保存板块列表时出错: {e}")
+
+        # 如果用户需要获取成分股，则小批量获取
+        if fetch_members:
+            print("开始获取成分股（小批量）...")
+            all_member_data = []
+            for j, (_, row) in enumerate(df_index.iterrows(), 1):
+                ts_code = row['ts_code']
+                time.sleep(0.2)
+                df_member = self._fetch_tdx_member_batch(trade_date, ts_code)
+                if df_member is not None and not df_member.empty:
+                    df_member['trade_date'] = trade_date
+                    all_member_data.append(df_member)
+                if j % 50 == 0:
+                    time.sleep(1.0)
+
+            if all_member_data:
+                df_member_all = pd.concat(all_member_data, ignore_index=True)
+                try:
+                    if self.member_file_path.exists():
+                        existing_df = pd.read_parquet(self.member_file_path, engine='pyarrow')
+                        combined_df = pd.concat([existing_df, df_member_all], ignore_index=True)
+                        if 'code' in combined_df.columns:
+                            combined_df = combined_df.drop_duplicates(subset=['ts_code', 'trade_date', 'code']).sort_values('trade_date')
+                        elif 'con_code' in combined_df.columns:
+                            combined_df = combined_df.drop_duplicates(subset=['ts_code', 'trade_date', 'con_code']).sort_values('trade_date')
+                        else:
+                            combined_df = combined_df.drop_duplicates().sort_values('trade_date')
+                        combined_df.to_parquet(self.member_file_path, engine='pyarrow', index=False)
+                        print(f"已将成分股追加到: {self.member_file_path}")
+                    else:
+                        if 'code' in df_member_all.columns:
+                            df_member_all = df_member_all.drop_duplicates(subset=['ts_code', 'trade_date', 'code']).sort_values('trade_date')
+                        elif 'con_code' in df_member_all.columns:
+                            df_member_all = df_member_all.drop_duplicates(subset=['ts_code', 'trade_date', 'con_code']).sort_values('trade_date')
+                        else:
+                            df_member_all = df_member_all.drop_duplicates().sort_values('trade_date')
+                        df_member_all.to_parquet(self.member_file_path, engine='pyarrow', index=False)
+                        print(f"已创建成分股文件: {self.member_file_path}")
+                except Exception as e:
+                    print(f"保存成分股时出错: {e}")
+
+        return df_index
+
 
 def main():
     """主函数"""
@@ -420,6 +496,7 @@ def main():
         print("\n请选择操作:")
         print("1. 增量更新（从最新日期继续）")
         print("2. 指定日期范围更新")
+        print("3. 获取单日板块列表（测试用，默认仅获取板块列表，不抓取成分股）")
         
         choice = input("请输入选择 (1-2): ").strip()
         
@@ -433,6 +510,14 @@ def main():
             end_date = end_date if end_date else None
             
             downloader.update_tdx_industry(start_date=start_date, end_date=end_date)  # type: ignore
+        elif choice == '3':
+            test_date = input("请输入要测试的日期 (YYYYMMDD，例如20250630): ").strip()
+            if not test_date:
+                print("未输入日期，退出")
+                return 1
+            fetch_members_input = input("是否同时获取成分股？(y/N): ").strip().lower()
+            fetch_members = fetch_members_input == 'y'
+            downloader.fetch_for_single_date(test_date, fetch_members=fetch_members)
         else:
             print("无效选择")
             return 1
