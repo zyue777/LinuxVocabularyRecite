@@ -20,7 +20,7 @@ warnings.filterwarnings('ignore')
 class QuantDataManager:
     """量化数据中心管理器"""
     
-    def __init__(self, data_center_path: str = None, token: str = None):
+    def __init__(self, data_center_path: Optional[str] = None, token: Optional[str] = None):
         """
         初始化数据管理器
         
@@ -249,8 +249,8 @@ class QuantDataManager:
         except Exception as e:
             return {'ts_code': ts_code, 'status': 'error', 'message': str(e)}
     
-    def update_stock_daily_hfq(self, start_date: str = None, end_date: str = None, 
-                              stock_list: List[str] = None, batch_size: int = 150, max_workers: int = 5):
+    def update_stock_daily_hfq(self, start_date: Optional[str] = None, end_date: Optional[str] = None, 
+                              stock_list: Optional[List[str]] = None, batch_size: int = 150, max_workers: int = 5):
         """
         更新股票日K线数据（后复权） - 支持高并发下载
         
@@ -286,6 +286,8 @@ class QuantDataManager:
                                             fields='ts_code,list_date')
             stock_info = dict(zip(stock_basic_df['ts_code'], stock_basic_df['list_date'])) if stock_basic_df is not None else {}
         
+        # 类型守护：保证stock_list不是None
+        assert stock_list is not None
         print(f"共需更新 {len(stock_list)} 只股票")
         
         if end_date is None:
@@ -304,7 +306,7 @@ class QuantDataManager:
                 
                 print(f"\n提交批次 {batch_start//batch_size + 1}: 股票 {batch_start+1}-{batch_end} ({len(batch_stocks)} 只)")
                 
-                futures = {executor.submit(self._fetch_daily_hfq_worker, ts_code, start_date, end_date, stock_info): ts_code for ts_code in batch_stocks}
+                futures = {executor.submit(self._fetch_daily_hfq_worker, ts_code, start_date or '', end_date, stock_info): ts_code for ts_code in batch_stocks}
                 
                 for future in as_completed(futures):
                     try:
@@ -426,7 +428,7 @@ class QuantDataManager:
             """转换工作函数"""
             try:
                 # 调用转换函数
-                df_qfq = self.convert_hfq_to_qfq(ts_code, str(self.data_center_path))
+                df_qfq = self.convert_hfq_to_qfq(ts_code, str(self.data_center_path))  # type: ignore
                 
                 if df_qfq is not None and not df_qfq.empty:
                     # 保存前复权数据
@@ -647,7 +649,7 @@ class QuantDataManager:
         except Exception as e:
             return {'ts_code': ts_code, 'status': 'error', 'message': str(e)}
     
-    def update_income_table(self, stock_list: List[str] = None, batch_size: int = 50, max_workers: int = 1):
+    def update_income_table(self, stock_list: Optional[List[str]] = None, batch_size: int = 50, max_workers: int = 1):
         """
         更新利润表数据 - 支持批量下载
         
@@ -673,6 +675,8 @@ class QuantDataManager:
                 return
             stock_list = stock_basic_df['ts_code'].tolist()
         
+        # 类型守护：保证stock_list不是None
+        assert stock_list is not None
         print(f"共需更新 {len(stock_list)} 只股票")
         
         up_to_date_stocks = []
@@ -737,7 +741,7 @@ class QuantDataManager:
             failed_stocks=failed_stocks
         )
     
-    def update_balancesheet_table(self, stock_list: List[str] = None, batch_size: int = 50, max_workers: int = 1):
+    def update_balancesheet_table(self, stock_list: Optional[List[str]] = None, batch_size: int = 50, max_workers: int = 1):
         """
         更新资产负债表数据 - 支持批量下载
         
@@ -763,6 +767,8 @@ class QuantDataManager:
                 return
             stock_list = stock_basic_df['ts_code'].tolist()
         
+        # 类型守护：保证stock_list不是None
+        assert stock_list is not None
         print(f"共需更新 {len(stock_list)} 只股票")
         
         up_to_date_stocks = []
@@ -827,7 +833,7 @@ class QuantDataManager:
             failed_stocks=failed_stocks
         )
     
-    def update_cashflow_table(self, stock_list: List[str] = None, batch_size: int = 50, max_workers: int = 1):
+    def update_cashflow_table(self, stock_list: Optional[List[str]] = None, batch_size: int = 50, max_workers: int = 1):
         """
         更新现金流量表数据 - 支持批量下载
         
@@ -853,6 +859,8 @@ class QuantDataManager:
                 return
             stock_list = stock_basic_df['ts_code'].tolist()
         
+        # 类型守护：保证stock_list不是None
+        assert stock_list is not None
         print(f"共需更新 {len(stock_list)} 只股票")
         
         up_to_date_stocks = []
@@ -917,7 +925,7 @@ class QuantDataManager:
             failed_stocks=failed_stocks
         )
     
-    def update_index_constituents(self, index_codes: List[str] = None, 
+    def update_index_constituents(self, index_codes: Optional[List[str]] = None, 
                                 start_year: int = 2010):
         """
         更新指数历史成分股数据（月度）- 支持增量更新
@@ -1072,7 +1080,7 @@ class QuantDataManager:
             else:
                 print(f"  {index_code}: 无新数据可保存")
     
-    def update_risk_free_rate(self, start_date: str = None, end_date: str = None):
+    def update_risk_free_rate(self, start_date: Optional[str] = None, end_date: Optional[str] = None):
         """
         更新无风险利率数据
         
@@ -1149,7 +1157,7 @@ class QuantDataManager:
         except Exception as e:
             print(f"更新无风险利率数据失败: {e}")
     
-    def update_sw_industry_daily(self, start_date: str = None, end_date: str = None):
+    def update_sw_industry_daily(self, start_date: Optional[str] = None, end_date: Optional[str] = None):
         """
         更新申万行业分类数据（日度）
         
@@ -1496,8 +1504,8 @@ class QuantDataManager:
             import traceback
             traceback.print_exc()
     
-    def update_index_daily(self, index_codes: List[str] = None, 
-                          start_date: str = None, end_date: str = None):
+    def update_index_daily(self, index_codes: Optional[List[str]] = None, 
+                          start_date: Optional[str] = None, end_date: Optional[str] = None):
         """
         更新指数日K线数据
         
@@ -1667,8 +1675,8 @@ class QuantDataManager:
             import traceback
             traceback.print_exc()
     
-    def update_stock_moneyflow(self, start_date: str = None, end_date: str = None, 
-                              stock_list: List[str] = None, batch_size: int = 150, max_workers: int = 5):
+    def update_stock_moneyflow(self, start_date: Optional[str] = None, end_date: Optional[str] = None, 
+                              stock_list: Optional[List[str]] = None, batch_size: int = 150, max_workers: int = 5):
         """
         更新股票资金流向数据（moneyflow）- 支持高并发下载和增量更新
         
@@ -1707,6 +1715,8 @@ class QuantDataManager:
                                             fields='ts_code,list_date')
             stock_info = dict(zip(stock_basic_df['ts_code'], stock_basic_df['list_date'])) if stock_basic_df is not None else {}
         
+        # 类型守护：保证stock_list不是None
+        assert stock_list is not None
         print(f"共需更新 {len(stock_list)} 只股票")
         
         if end_date is None:
@@ -1725,7 +1735,7 @@ class QuantDataManager:
                 
                 print(f"\n提交批次 {batch_start//batch_size + 1}: 股票 {batch_start+1}-{batch_end} ({len(batch_stocks)} 只)")
                 
-                futures = {executor.submit(self._fetch_moneyflow_worker, ts_code, start_date, end_date, stock_info): ts_code for ts_code in batch_stocks}
+                futures = {executor.submit(self._fetch_moneyflow_worker, ts_code, start_date or '', end_date, stock_info): ts_code for ts_code in batch_stocks}
                 
                 for future in as_completed(futures):
                     try:
@@ -1802,7 +1812,7 @@ class QuantDataManager:
             failed_stocks=failed_stocks
         )
     
-    def update_daily_basic(self, start_date: str = None, end_date: str = None):
+    def update_daily_basic(self, start_date: Optional[str] = None, end_date: Optional[str] = None):
         """
         更新股票每日基础指标
         目标：获取 'total_mv' (总市值) 和 'pb' (市净率)
@@ -2065,7 +2075,7 @@ class QuantDataManager:
                 for ts_code, message in failed_stocks:
                     f.write(f"{ts_code}: {message}\n")
 
-    def update_all(self, start_date: str = None, end_date: str = None, 
+    def update_all(self, start_date: Optional[str] = None, end_date: Optional[str] = None, 
                    include_sw_member: bool = False):
         """
         更新所有数据（不包含财务三大表）
@@ -2089,7 +2099,7 @@ class QuantDataManager:
         self.update_stock_basic()
         self.update_risk_free_rate(start_date, end_date)
         self.update_sw_industry_daily(start_date, end_date)
-        self.update_index_daily(None, start_date, end_date)
+        self.update_index_daily(None, start_date, end_date)  # type: ignore
         self.update_index_constituents()
         
         print("\n步骤2: 更新股票核心数据...")
@@ -2152,7 +2162,7 @@ def main():
     
     # 创建数据管理器（自动从config.py读取Token）
     try:
-        manager = QuantDataManager(data_center_path)
+        manager = QuantDataManager(data_center_path)  # type: ignore
         print(f"\n✅ 数据中心路径: {manager.data_center_path}")
         print(f"   如果路径不正确，请按 Ctrl+C 退出并重新运行\n")
         

@@ -23,7 +23,7 @@ warnings.filterwarnings('ignore')
 class TDXIndustryDownloader:
     """通达信板块分类数据下载器"""
     
-    def __init__(self, data_center_path: str = None, token: str = None):
+    def __init__(self, data_center_path: Optional[str] = None, token: Optional[str] = None):
         """
         初始化下载器
         
@@ -120,7 +120,7 @@ class TDXIndustryDownloader:
         
         return None
     
-    def _fetch_tdx_index_batch(self, trade_date: str, idx_type: str = None):
+    def _fetch_tdx_index_batch(self, trade_date: str, idx_type: Optional[str] = None):
         """
         分批获取通达信板块列表（处理3000条限制）
         
@@ -202,7 +202,7 @@ class TDXIndustryDownloader:
         except Exception as e:
             return pd.DataFrame()
     
-    def update_tdx_industry(self, start_date: str = None, end_date: str = None):
+    def update_tdx_industry(self, start_date: Optional[str] = None, end_date: Optional[str] = None):
         """
         更新通达信板块分类数据（日度）
         
@@ -415,7 +415,7 @@ def main():
         data_center_path = None
     
     try:
-        downloader = TDXIndustryDownloader(data_center_path)
+        downloader = TDXIndustryDownloader(data_center_path)  # type: ignore
         
         print("\n请选择操作:")
         print("1. 增量更新（从最新日期继续）")
@@ -432,7 +432,7 @@ def main():
             start_date = start_date if start_date else None
             end_date = end_date if end_date else None
             
-            downloader.update_tdx_industry(start_date=start_date, end_date=end_date)
+            downloader.update_tdx_industry(start_date=start_date, end_date=end_date)  # type: ignore
         else:
             print("无效选择")
             return 1
