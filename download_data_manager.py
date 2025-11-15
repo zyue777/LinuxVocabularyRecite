@@ -169,28 +169,21 @@ class QuantDataManager:
         try:
             file_path = self.paths['stock_daily_hfq'] / f"{ts_code}.parquet"
             
-            # 获取本地最新日期
-            local_latest_date = self._get_latest_date(file_path, 'trade_date')
-            
-            # ✅ 优化：先检查本地数据是否已到 Tushare 最新交易日
-            if local_latest_date and local_latest_date >= end_date:
-                return {'ts_code': ts_code, 'status': 'up_to_date'}
-            
-            # 确定开始日期
+            # 确定开始日期（简化逻辑：直接获取到end_date的所有数据）
             start_date_actual = start_date
             if start_date is None or start_date == '':
+                # 获取本地最新日期
+                local_latest_date = self._get_latest_date(file_path, 'trade_date')
                 if local_latest_date:
+                    # 从最新日期的下一天开始（Tushare API会自动处理交易日历）
                     latest_dt = datetime.strptime(local_latest_date, '%Y%m%d')
                     start_date_actual = (latest_dt + timedelta(days=1)).strftime('%Y%m%d')
                 else:
+                    # 如果文件不存在，使用上市日期或默认日期
                     list_date = stock_info.get(ts_code)
                     start_date_actual = list_date if list_date and list_date != 'None' else '19900101'
-            
-            # 再次检查（防止计算后的日期超过 end_date）
-            if start_date_actual >= end_date:
-                return {'ts_code': ts_code, 'status': 'up_to_date'}
 
-            # 获取数据
+            # 获取数据（直接调用API，让Tushare处理交易日历）
             df = self._safe_api_call(ts.pro_bar,
                                    ts_code=ts_code,
                                    adj='hfq',
@@ -209,34 +202,22 @@ class QuantDataManager:
         try:
             file_path = self.paths['stock_moneyflow'] / f"{ts_code}.parquet"
             
-            # 获取本地最新日期
-            local_latest_date = self._get_latest_date(file_path, 'trade_date')
-            
-            # ✅ 优化：先检查本地数据是否已到 Tushare 最新交易日
-            if local_latest_date and local_latest_date >= end_date:
-                return {'ts_code': ts_code, 'status': 'up_to_date'}
-            
-            # 确定开始日期（增量更新逻辑）
-            if local_latest_date:
-                # 如果文件存在且有数据，从最新日期的下一天开始
-                latest_dt = datetime.strptime(local_latest_date, '%Y%m%d')
-                data_start_date = (latest_dt + timedelta(days=1)).strftime('%Y%m%d')
-            else:
-                # 如果文件不存在，使用上市日期或默认日期
-                list_date = stock_info.get(ts_code)
-                data_start_date = list_date if list_date and list_date != 'None' else '20100101'  # 资金流数据从2010年开始
-            
-            # 如果用户指定了start_date，取两者中的较大值（确保不重复下载）
+            # 确定开始日期（简化逻辑：直接获取到end_date的所有数据）
             if start_date is not None and start_date != '':
-                start_date_actual = max(start_date, data_start_date) if local_latest_date else start_date
+                start_date_actual = start_date
             else:
-                start_date_actual = data_start_date
-            
-            # 再次检查（防止计算后的日期超过 end_date）
-            if start_date_actual > end_date:
-                return {'ts_code': ts_code, 'status': 'up_to_date'}
+                # 获取本地最新日期
+                local_latest_date = self._get_latest_date(file_path, 'trade_date')
+                if local_latest_date:
+                    # 从最新日期的下一天开始（Tushare API会自动处理交易日历）
+                    latest_dt = datetime.strptime(local_latest_date, '%Y%m%d')
+                    start_date_actual = (latest_dt + timedelta(days=1)).strftime('%Y%m%d')
+                else:
+                    # 如果文件不存在，使用上市日期或默认日期
+                    list_date = stock_info.get(ts_code)
+                    start_date_actual = list_date if list_date and list_date != 'None' else '20100101'  # 资金流数据从2010年开始
 
-            # 获取数据
+            # 获取数据（直接调用API，让Tushare处理交易日历）
             df = self._safe_api_call(self.pro.moneyflow,
                                    ts_code=ts_code,
                                    start_date=start_date_actual,
@@ -248,7 +229,7 @@ class QuantDataManager:
                 missing_cols = [col for col in required_cols if col not in df.columns]
                 if missing_cols:
                     # 如果缺少必需列，记录错误但不中断
-                    return {'ts_code': ts_code, 'status': 'error', 
+                    return {'ts_code': ts_code, 'status': 'error',
                            'message': f'API返回数据缺少必需列: {missing_cols}, 实际列: {list(df.columns)}'}
                 
                 # 确保ts_code列存在（如果API没有返回，则添加）

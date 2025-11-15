@@ -443,7 +443,10 @@ class DataStatusChecker:
             'exists': dir_path.exists(),
             'latest_date': None,
             'file_count': 0,
-            'total_records': 0
+            'total_records': 0,
+            'coverage': None,  # 新增：覆盖率
+            'missing_latest_count': 0,  # 新增：缺失最新日期的文件数
+            'missing_latest_stocks': []  # 新增：缺失最新日期的股票列表
         }
         
         if dir_path.exists():
@@ -452,8 +455,47 @@ class DataStatusChecker:
                 status['file_count'] = len(files)
                 
                 if files:
-                    latest_date = self._get_latest_date_from_dir(dir_path, 'trade_date')
-                    status['latest_date'] = latest_date
+                    # 获取所有文件的最新日期
+                    latest_dates = []
+                    files_with_latest = 0
+                    missing_stocks = []
+                    
+                    for file_path in files:
+                        try:
+                            df = pd.read_parquet(file_path, engine='pyarrow', columns=['trade_date'])
+                            if not df.empty:
+                                latest_date = df['trade_date'].max()
+                                latest_dates.append(latest_date)
+                                
+                                # 检查是否达到整体最新日期
+                                if status['latest_date'] is None or latest_date > status['latest_date']:
+                                    status['latest_date'] = latest_date
+                            else:
+                                latest_dates.append(None)
+                        except:
+                            latest_dates.append(None)
+                    
+                    # 第二次遍历：统计达到最新日期的文件数
+                    if status['latest_date'] is not None:
+                        for i, file_path in enumerate(files):
+                            try:
+                                df = pd.read_parquet(file_path, engine='pyarrow', columns=['trade_date'])
+                                if not df.empty:
+                                    has_latest = (df['trade_date'] == status['latest_date']).any()
+                                    if has_latest:
+                                        files_with_latest += 1
+                                    else:
+                                        status['missing_latest_count'] += 1
+                                        status['missing_latest_stocks'].append(file_path.stem)
+                                else:
+                                    status['missing_latest_count'] += 1
+                                    status['missing_latest_stocks'].append(file_path.stem)
+                            except:
+                                status['missing_latest_count'] += 1
+                                status['missing_latest_stocks'].append(file_path.stem)
+                        
+                        # 计算覆盖率
+                        status['coverage'] = files_with_latest / len(files) if files else 0
                     
                     # 统计总记录数（采样）
                     if len(files) <= 100:
