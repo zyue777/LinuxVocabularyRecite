@@ -233,7 +233,7 @@ class QuantDataManager:
                 start_date_actual = data_start_date
             
             # 再次检查（防止计算后的日期超过 end_date）
-            if start_date_actual >= end_date:
+            if start_date_actual > end_date:
                 return {'ts_code': ts_code, 'status': 'up_to_date'}
 
             # 获取数据
@@ -1838,10 +1838,10 @@ class QuantDataManager:
                             failed_stocks.append((file_path.stem, str(e)))
                     batch_data_to_save.clear()
                 
-                # 限流：每批次之间等待时间
-                # 计算公式：150批次 × 5并发 / 60秒 ≈ 12.5批/秒
-                # 每批等待：60/150 ≈ 0.4秒，实际约750次/分钟
-                time.sleep(0.4)
+                # 限流：控制API调用频率为500次/分钟（约8.33次/秒）
+                # 每批次150个请求，需要等待 60/(500/150) = 18秒
+                # 刚好卡在Tushare的500次/分钟限制
+                time.sleep(18)
 
         self._generate_download_report(
             data_type='股票资金流向',
