@@ -562,6 +562,119 @@ class DataStatusChecker:
         
         return status
     
+    def check_margin_total(self) -> Dict[str, Any]:
+        """检查融资融券交易汇总数据"""
+        file_path = self.data_center_path / "market" / "margin_total" / "margin_total.parquet"
+        
+        status = {
+            'name': '融资融券交易汇总',
+            'path': str(file_path),
+            'exists': file_path.exists(),
+            'latest_date': None,
+            'count': 0,
+            'exchange_distribution': {}
+        }
+        
+        if file_path.exists():
+            try:
+                latest_date = self._get_latest_date(file_path, 'trade_date')
+                status['latest_date'] = latest_date
+                
+                df = pd.read_parquet(file_path, engine='pyarrow', columns=['trade_date', 'exchange_id'])
+                status['count'] = len(df)
+                
+                # 统计交易所分布
+                if 'exchange_id' in df.columns:
+                    status['exchange_distribution'] = df['exchange_id'].value_counts().to_dict()
+            except Exception as e:
+                status['error'] = str(e)
+        
+        return status
+    
+    def check_margin_detail(self) -> Dict[str, Any]:
+        """检查融资融券交易明细数据（按日期存储）"""
+        dir_path = self.data_center_path / "market" / "margin_detail"
+        
+        status = {
+            'name': '融资融券交易明细',
+            'path': str(dir_path),
+            'exists': dir_path.exists(),
+            'latest_date': None,
+            'file_count': 0,
+            'total_records': 0,
+            'date_range': None
+        }
+        
+        if dir_path.exists():
+            try:
+                files = list(dir_path.glob("*.parquet"))
+                status['file_count'] = len(files)
+                
+                if files:
+                    # 获取所有日期文件的最新日期
+                    latest_dates = []
+                    all_dates = []
+                    
+                    for file_path in files:
+                        try:
+                            # 文件名格式：{trade_date}.parquet
+                            date_str = file_path.stem
+                            if date_str.isdigit() and len(date_str) == 8:
+                                all_dates.append(date_str)
+                                
+                                # 读取文件获取数据条数
+                                df = pd.read_parquet(file_path, engine='pyarrow', columns=['trade_date'])
+                                if not df.empty:
+                                    latest_date = df['trade_date'].max()
+                                    latest_dates.append(latest_date)
+                                    status['total_records'] += len(df)
+                        except:
+                            continue
+                    
+                    if all_dates:
+                        status['date_range'] = {
+                            'start': min(all_dates),
+                            'end': max(all_dates)
+                        }
+                    
+                    if latest_dates:
+                        status['latest_date'] = max(latest_dates)
+            except Exception as e:
+                status['error'] = str(e)
+        
+        return status
+    
+    def check_moneyflow_hsgt(self) -> Dict[str, Any]:
+        """检查沪深港通资金流向数据"""
+        file_path = self.data_center_path / "market" / "hsgt" / "moneyflow_hsgt.parquet"
+        
+        status = {
+            'name': '沪深港通资金流向',
+            'path': str(file_path),
+            'exists': file_path.exists(),
+            'latest_date': None,
+            'count': 0,
+            'date_range': None
+        }
+        
+        if file_path.exists():
+            try:
+                latest_date = self._get_latest_date(file_path, 'trade_date')
+                status['latest_date'] = latest_date
+                
+                df = pd.read_parquet(file_path, engine='pyarrow', columns=['trade_date'])
+                status['count'] = len(df)
+                
+                if not df.empty:
+                    status['date_range'] = {
+                        'start': df['trade_date'].min(),
+                        'end': df['trade_date'].max()
+                    }
+            except Exception as e:
+                status['error'] = str(e)
+        
+        return status
+    
     def check_all(self) -> List[Dict[str, Any]]:
         """检查所有数据状态"""
         print("\n" + "="*80)
@@ -590,6 +703,11 @@ class DataStatusChecker:
         
         # 分类数据
         all_status.append(self.check_sw_industry())
+        
+        # 市场数据 🆕 新增
+        all_status.append(self.check_margin_total())
+        all_status.append(self.check_margin_detail())
+        all_status.append(self.check_moneyflow_hsgt())
         
         # 前复权转换功能 🆕 新增
         all_status.append(self.check_qfq_conversion())
@@ -656,14 +774,23 @@ class DataStatusChecker:
                     formatted_date = liq_date
                 print(f"   LIQ最新日期: {formatted_date}")
             
-            # 显示记录数
-            if 'count' in status and status['count'] > 0:
-                print(f"   记录数: {status['count']:,} 条")
+            # 显示记录数（即使为0也显示，让用户知道状态）
+            if 'count' in status:
+                if status['count'] > 0:
+                    print(f"   记录数: {status['count']:,} 条")
+                elif exists:  # 如果数据存在但记录数为0，也显示
+                    print(f"   记录数: 0 条")
             
-            if 'file_count' in status and status['file_count'] > 0:
-                print(f"   文件数: {status['file_count']:,} 个")
-                if 'total_records' in status and status['total_records'] > 0:
-                    print(f"   总记录数（估算）: {status['total_records']:,} 条")
+            # 显示文件数（即使为0也显示，让用户知道状态）
+            if 'file_count' in status:
+                if status['file_count'] > 0:
+                    print(f"   文件数: {status['file_count']:,} 个")
+                    if 'total_records' in status and status['total_records'] > 0:
+                        print(f"   总记录数（估算）: {status['total_records']:,} 条")
+                elif exists:  # 如果目录存在但文件数为0，也显示
+                    print(f"   文件数: 0 个")
+                    if 'total_records' in status:
+                        print(f"   总记录数: 0 条")
             
             if 'member_count' in status and status['member_count'] > 0:
                 print(f"   映射记录数: {status['member_count']:,} 条")
@@ -698,6 +825,29 @@ class DataStatusChecker:
                     print(f"   功能状态: ❌ 不可用")
                     if 'test_result' in status and status['test_result']:
                         print(f"   {status['test_result']}")
+            
+            # 显示交易所分布（融资融券交易汇总）
+            if 'exchange_distribution' in status and status['exchange_distribution']:
+                print(f"   交易所分布:")
+                for exchange, count in status['exchange_distribution'].items():
+                    exchange_name = {'SSE': '上交所', 'SZSE': '深交所', 'BSE': '北交所'}.get(exchange, exchange)
+                    print(f"     - {exchange_name}({exchange}): {count:,} 条")
+            
+            # 显示日期范围（融资融券明细、沪深港通等）
+            if 'date_range' in status and status['date_range']:
+                date_range = status['date_range']
+                start_date = date_range.get('start', '')
+                end_date = date_range.get('end', '')
+                if start_date and end_date:
+                    if len(start_date) == 8:
+                        formatted_start = f"{start_date[:4]}-{start_date[4:6]}-{start_date[6:8]}"
+                    else:
+                        formatted_start = start_date
+                    if len(end_date) == 8:
+                        formatted_end = f"{end_date[:4]}-{end_date[4:6]}-{end_date[6:8]}"
+                    else:
+                        formatted_end = end_date
+                    print(f"   日期范围: {formatted_start} 至 {formatted_end}")
         
         print("\n" + "="*80)
         print("✅ 数据状态检查完成")

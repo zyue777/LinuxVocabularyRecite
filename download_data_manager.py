@@ -62,7 +62,10 @@ class QuantDataManager:
             'index_constituents': self.data_center_path / "index" / "constituents",
             'factors_ff5': self.data_center_path / "factors" / "fama_french_5",
             'factors_rfr': self.data_center_path / "factors" / "risk_free",
-            'industry_sw': self.data_center_path / "classification" / "industry_sw"
+            'industry_sw': self.data_center_path / "classification" / "industry_sw",
+            'market_margin_total': self.data_center_path / "market" / "margin_total",  # 🆕 融资融券总额
+            'market_margin_detail': self.data_center_path / "market" / "margin_detail",  # 🆕 融资融券明细
+            'market_hsgt': self.data_center_path / "market" / "hsgt"  # 🆕 沪深港通资金流向
         }
         
         # 确保所有目录存在
@@ -1941,6 +1944,257 @@ class QuantDataManager:
         except Exception as e:
             print(f"更新股票每日基础指标失败: {e}")
     
+    def update_margin_total(self, start_date: Optional[str] = None, end_date: Optional[str] = None):
+        """
+        更新融资融券交易汇总数据（市场总额）
+        
+        Args:
+            start_date: 开始日期 (YYYYMMDD)
+            end_date: 结束日期 (YYYYMMDD)
+        """
+        print("=" * 60)
+        print("开始更新融资融券交易汇总数据（市场总额）")
+        print("=" * 60)
+        
+        file_path = self.paths['market_margin_total'] / "margin_total.parquet"
+        
+        # 确定开始日期
+        if start_date is None:
+            latest_date = self._get_latest_date(file_path, 'trade_date')
+            if latest_date:
+                latest_dt = datetime.strptime(latest_date, '%Y%m%d')
+                start_date_actual = (latest_dt + timedelta(days=1)).strftime('%Y%m%d')
+            else:
+                start_date_actual = '20100101'  # 融资融券数据从2010年开始
+        else:
+            start_date_actual = start_date
+        
+        if end_date is None:
+            end_date = datetime.now().strftime('%Y%m%d')
+        
+        if start_date_actual >= end_date:
+            print("融资融券交易汇总数据已是最新")
+            return
+        
+        print(f"获取 {start_date_actual} 到 {end_date} 的融资融券交易汇总数据")
+        
+        try:
+            df = self._safe_api_call(self.pro.margin,
+                                   start_date=start_date_actual,
+                                   end_date=end_date)
+            
+            if df is None or df.empty:
+                print("无新数据")
+                return
+            
+            # 保存数据
+            if file_path.exists():
+                existing_df = pd.read_parquet(file_path, engine='pyarrow')
+                combined_df = pd.concat([existing_df, df], ignore_index=True)
+                combined_df = combined_df.drop_duplicates(subset=['trade_date']).sort_values('trade_date')
+                combined_df.to_parquet(file_path, engine='pyarrow', index=False)
+            else:
+                df = df.drop_duplicates(subset=['trade_date']).sort_values('trade_date')
+                df.to_parquet(file_path, engine='pyarrow', index=False)
+            
+            print(f"成功更新 {len(df)} 条融资融券交易汇总记录")
+            
+        except Exception as e:
+            print(f"更新融资融券交易汇总数据失败: {e}")
+    
+    def update_stock_margin_detail(self, start_date: Optional[str] = None, end_date: Optional[str] = None,
+                                  stock_list: Optional[List[str]] = None, batch_size: int = 50, max_workers: int = 1):
+        """
+        更新个股融资融券交易明细数据（增量下载）
+        
+        Args:
+            start_date: 开始日期 (YYYYMMDD)
+            end_date: 结束日期 (YYYYMMDD)
+            stock_list: 股票代码列表，如果为None则获取所有股票
+            batch_size: 批处理大小
+            max_workers: 最大并发线程数（建议设为1，避免API限流）
+        """
+        print("=" * 60)
+        print("开始更新个股融资融券交易明细数据（增量下载）")
+        print(f"最大并发线程数: {max_workers}")
+        print("注意: 已限制API调用频率，防止封IP")
+        print("=" * 60)
+        
+        # 确保目录存在
+        self.paths['market_margin_detail'].mkdir(parents=True, exist_ok=True)
+        
+        # 获取最新交易日
+        if end_date is None:
+            print("获取 Tushare 最新交易日...")
+            cal_df = self._safe_api_call(self.pro.trade_cal,
+                                        exchange='SSE',
+                                        is_open='1',
+                                        start_date=(datetime.now() - timedelta(days=10)).strftime('%Y%m%d'),
+                                        end_date=datetime.now().strftime('%Y%m%d'))
+            
+            if cal_df is None or cal_df.empty:
+                print("⚠️  无法获取交易日历，使用当前日期")
+                end_date = datetime.now().strftime('%Y%m%d')
+            else:
+                end_date = cal_df['cal_date'].max()
+                print(f"✅ Tushare 数据最新到: {end_date}")
+        
+        # 按日期循环处理（因为margin_detail API需要按日期查询）
+        if start_date is None:
+            # 获取所有需要更新的日期
+            # 先检查已有数据的日期范围
+            existing_dates = set()
+            for date_file in self.paths['market_margin_detail'].glob("*.parquet"):
+                try:
+                    # 文件名格式：{trade_date}.parquet
+                    date_str = date_file.stem
+                    if date_str.isdigit() and len(date_str) == 8:
+                        existing_dates.add(date_str)
+                except:
+                    pass
+            
+            # 获取交易日历
+            cal_df = self._safe_api_call(self.pro.trade_cal,
+                                        exchange='SSE',
+                                        is_open='1',
+                                        start_date='20100101',  # 融资融券数据从2010年开始
+                                        end_date=end_date)
+            
+            if cal_df is None or cal_df.empty:
+                print("无法获取交易日历")
+                return
+            
+            trade_dates = sorted(cal_df['cal_date'].unique())
+            # 过滤出需要更新的日期
+            dates_to_update = [d for d in trade_dates if d not in existing_dates]
+            
+            if not dates_to_update:
+                print("所有日期的数据已存在，无需更新")
+                return
+            
+            print(f"需要更新 {len(dates_to_update)} 个交易日的数据")
+        else:
+            # 如果指定了开始日期，获取该日期范围内的交易日
+            cal_df = self._safe_api_call(self.pro.trade_cal,
+                                        exchange='SSE',
+                                        is_open='1',
+                                        start_date=start_date,
+                                        end_date=end_date)
+            
+            if cal_df is None or cal_df.empty:
+                print("无法获取交易日历")
+                return
+            
+            dates_to_update = sorted(cal_df['cal_date'].unique())
+            print(f"需要更新 {len(dates_to_update)} 个交易日的数据")
+        
+        success_dates = []
+        failed_dates = []
+        
+        # 按日期循环处理
+        for i, trade_date in enumerate(dates_to_update, 1):
+            if i % 10 == 0 or i == 1:
+                print(f"\n进度: {i}/{len(dates_to_update)} ({i/len(dates_to_update)*100:.1f}%) - 日期: {trade_date}")
+            
+            try:
+                # 获取该日期的所有股票融资融券明细
+                df = self._safe_api_call(self.pro.margin_detail,
+                                       trade_date=trade_date)
+                
+                if df is None or df.empty:
+                    continue
+                
+                # 按日期保存为单个文件
+                file_path = self.paths['market_margin_detail'] / f"{trade_date}.parquet"
+                
+                try:
+                    # 去重并排序
+                    df = df.drop_duplicates(subset=['ts_code', 'trade_date']).sort_values('ts_code')
+                    df.to_parquet(file_path, engine='pyarrow', index=False)
+                    success_dates.append(trade_date)
+                except Exception as e:
+                    failed_dates.append((trade_date, str(e)))
+                
+                # 强制频控：每次API调用后等待（防止封IP）
+                time.sleep(2)
+                
+            except Exception as e:
+                print(f"  获取 {trade_date} 数据失败: {e}")
+                failed_dates.append((trade_date, str(e)))
+                continue
+        
+        print("\n" + "=" * 60)
+        print(f"更新完成:")
+        print(f"  成功: {len(success_dates)} 个交易日")
+        print(f"  失败: {len(failed_dates)} 个交易日")
+        print("=" * 60)
+    
+    def update_moneyflow_hsgt(self, start_date: Optional[str] = None, end_date: Optional[str] = None):
+        """
+        更新沪深港通资金流向数据
+        
+        Args:
+            start_date: 开始日期 (YYYYMMDD)
+            end_date: 结束日期 (YYYYMMDD)
+        """
+        print("=" * 60)
+        print("开始更新沪深港通资金流向数据")
+        print("=" * 60)
+        
+        file_path = self.paths['market_hsgt'] / "moneyflow_hsgt.parquet"
+        
+        # 确定开始日期
+        if start_date is None:
+            latest_date = self._get_latest_date(file_path, 'trade_date')
+            if latest_date:
+                latest_dt = datetime.strptime(latest_date, '%Y%m%d')
+                start_date_actual = (latest_dt + timedelta(days=1)).strftime('%Y%m%d')
+            else:
+                start_date_actual = '20141117'  # 沪港通开通日期
+        else:
+            start_date_actual = start_date
+        
+        if end_date is None:
+            end_date = datetime.now().strftime('%Y%m%d')
+        
+        if start_date_actual >= end_date:
+            print("沪深港通资金流向数据已是最新")
+            return
+        
+        print(f"获取 {start_date_actual} 到 {end_date} 的沪深港通资金流向数据")
+        
+        try:
+            df = self._safe_api_call(self.pro.moneyflow_hsgt,
+                                   start_date=start_date_actual,
+                                   end_date=end_date)
+            
+            if df is None or df.empty:
+                print("无新数据")
+                return
+            
+            # 保存数据
+            if file_path.exists():
+                existing_df = pd.read_parquet(file_path, engine='pyarrow')
+                combined_df = pd.concat([existing_df, df], ignore_index=True)
+                # 去重：根据trade_date去重（每条记录对应一个交易日）
+                if 'trade_date' in combined_df.columns:
+                    combined_df = combined_df.drop_duplicates(subset=['trade_date'], keep='last').sort_values('trade_date')
+                else:
+                    combined_df = combined_df.drop_duplicates()
+                combined_df.to_parquet(file_path, engine='pyarrow', index=False)
+            else:
+                # 新文件，按trade_date去重
+                if 'trade_date' in df.columns:
+                    df = df.drop_duplicates(subset=['trade_date'], keep='last').sort_values('trade_date')
+                else:
+                    df = df.drop_duplicates()
+                df.to_parquet(file_path, engine='pyarrow', index=False)
+            
+            print(f"成功更新 {len(df)} 条沪深港通资金流向记录")
+            
+        except Exception as e:
+            print(f"更新沪深港通资金流向数据失败: {e}")
+    
     # 注意：财务指标更新功能已移除，请使用专门的程序单独更新（每季度一次）
 
     def _get_latest_date_from_files(self, data_type: str) -> Optional[str]:
@@ -2120,7 +2374,7 @@ class QuantDataManager:
     def update_all(self, start_date: Optional[str] = None, end_date: Optional[str] = None, 
                    include_sw_member: bool = False):
         """
-        更新所有数据（不包含财务三大表）
+        更新所有基础原料数据（仅下载，不含因子计算）
         
         Args:
             start_date: 开始日期 (YYYYMMDD)
@@ -2128,12 +2382,14 @@ class QuantDataManager:
             include_sw_member: 是否包含申万行业成分股数据（可选，默认False，因为数据量大且更新不频繁）
         
         注意：
+            - 此函数只负责下载基础原料数据，不包含任何因子计算步骤
             - 财务三大表（利润表、资产负债表、现金流量表）请使用 download_financial_slow.py 脚本单独下载
-            - 该脚本提供更稳定的下载机制，适合大批量数据获取
+            - 个股融资融券明细数据量大，建议单独运行 update_stock_margin_detail()
             - 申万行业成分股数据更新较慢，默认不包含，可通过 include_sw_member=True 启用
+            - 因子计算请使用菜单选项12或直接运行对应的构建脚本
         """
         print("=" * 80)
-        print("开始更新所有数据（不含财务三大表）")
+        print("开始更新所有基础原料数据（仅下载，不含因子计算）")
         print("=" * 80)
         
         failed_steps = []
@@ -2189,11 +2445,26 @@ class QuantDataManager:
         except Exception as e:
             print(f"❌ 更新股票每日基础指标失败: {e}")
             failed_steps.append("股票每日基础指标")
+        
+        print("\n步骤4: 更新市场数据（融资融券、沪深港通）...")
+        try:
+            self.update_margin_total(start_date, end_date)
+        except Exception as e:
+            print(f"❌ 更新融资融券交易汇总失败: {e}")
+            failed_steps.append("融资融券交易汇总")
+        
+        try:
+            self.update_moneyflow_hsgt(start_date, end_date)
+        except Exception as e:
+            print(f"❌ 更新沪深港通资金流向失败: {e}")
+            failed_steps.append("沪深港通资金流向")
+        
         # 注意：财务指标数据请使用专门的程序单独更新（每季度一次）
+        # 注意：个股融资融券明细数据量大，建议单独运行 update_stock_margin_detail()
         
         # 可选：申万行业成分股数据（数据量大，更新较慢）
         if include_sw_member:
-            print("\n步骤4: 更新申万行业成分股数据（可选）...")
+            print("\n步骤5: 更新申万行业成分股数据（可选）...")
             print("  注意：此步骤可能需要较长时间")
             try:
                 self.update_sw_industry_member_latest()
@@ -2210,18 +2481,6 @@ class QuantDataManager:
             print("\n💡 建议：检查上述失败的步骤，必要时单独运行更新")
         else:
             print("✅ 数据更新完成！")
-        print("=" * 80)
-        
-        print("\n📝 后续步骤:")
-        print("  1. 如需更新财务三大表，请运行:")
-        print("     python download_financial_slow.py")
-        print("")
-        print("  2. 如需更新申万行业成分股数据，可单独运行:")
-        print("     manager.update_sw_industry_member_latest()  # 最新成分股")
-        print("     manager.update_sw_l2_member_history()      # L2历史映射")
-        print("")
-        print("  3. 构建Fama-French五因子:")
-        print("     python build_ff5_factors_monthly_ttm.py")
         print("=" * 80)
 
 
@@ -2259,7 +2518,7 @@ def main():
         
         # 选择更新模式
         print("\n请选择更新模式:")
-        print("1. 更新所有数据")
+        print("1. 更新所有数据（仅下载，不含因子计算）")
         print("2. 更新股票日K线数据")
         print("3. 更新股票资金流向数据")
         print("4. 更新指数成分股数据")
@@ -2270,9 +2529,13 @@ def main():
         print("9. 更新指数日K线")
         print("10. 更新股票基础信息")
         print("11. 更新股票每日基础指标")
+        print("12. 更新/计算因子策略")
+        print("13. 更新融资融券交易汇总")
+        print("14. 更新个股融资融券明细")
+        print("15. 更新沪深港通资金流向")
         # 注意：财务指标数据请使用专门的程序单独更新（每季度一次）
         
-        choice = input("请输入选择 (1-11): ").strip()
+        choice = input("请输入选择 (1-15): ").strip()
         
         if choice == '1':
             manager.update_all()
@@ -2296,6 +2559,27 @@ def main():
             manager.update_stock_basic()
         elif choice == '11':
             manager.update_daily_basic()
+        elif choice == '12':
+            print("\n" + "=" * 80)
+            print("因子策略计算")
+            print("=" * 80)
+            print("\n请选择要执行的因子计算:")
+            print("  1. 构建Fama-French五因子")
+            print("  2. 构建Fama-French三因子（全市场）")
+            print("  3. 构建自定义因子")
+            print("  4. 构建CH3因子")
+            print("\n提示: 请运行对应的构建脚本:")
+            print("  - python build_ff5_factors_monthly_ttm.py")
+            print("  - python build_ff3_factors_full_market.py")
+            print("  - python build_custom_factors.py")
+            print("  - python build_ch3_factors.py")
+            print("=" * 80)
+        elif choice == '13':
+            manager.update_margin_total()
+        elif choice == '14':
+            manager.update_stock_margin_detail()
+        elif choice == '15':
+            manager.update_moneyflow_hsgt()
         else:
             print("无效选择")
             return 1
