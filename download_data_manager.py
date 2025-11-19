@@ -1526,10 +1526,23 @@ class QuantDataManager:
         print("=" * 60)
         
         if index_codes is None:
-            index_codes = ['399300.SZ', '000905.SH', '399006.SZ']
+            index_codes = ['000001.SH', '399300.SZ', '000905.SH', '399006.SZ', '000300.SH']  # 上证指数、沪深300、中证500、创业板指、沪深300（另一个代码）
         
+        # ✅ 优化：先获取 Tushare 最新交易日（避免周末/节假日无效请求）
         if end_date is None:
-            end_date = datetime.now().strftime('%Y%m%d')
+            print("获取 Tushare 最新交易日...")
+            cal_df = self._safe_api_call(self.pro.trade_cal,
+                                        exchange='SSE',
+                                        is_open='1',
+                                        start_date=(datetime.now() - timedelta(days=10)).strftime('%Y%m%d'),
+                                        end_date=datetime.now().strftime('%Y%m%d'))
+            
+            if cal_df is None or cal_df.empty:
+                print("⚠️  无法获取交易日历，使用当前日期")
+                end_date = datetime.now().strftime('%Y%m%d')
+            else:
+                end_date = cal_df['cal_date'].max()
+                print(f"✅ Tushare 数据最新到: {end_date}")
         
         for index_code in index_codes:
             print(f"\n处理指数: {index_code}")
@@ -1559,7 +1572,11 @@ class QuantDataManager:
                                        end_date=end_date)
                 
                 if df is None or df.empty:
-                    print(f"  {index_code}: 无新数据")
+                    # 检查是否是因为日期范围内没有交易日
+                    if start_date_actual >= end_date:
+                        print(f"  {index_code}: 数据已是最新（开始日期 >= 结束日期）")
+                    else:
+                        print(f"  {index_code}: 无新数据（可能是非交易日或数据尚未发布）")
                     continue
                 
                 # 保存数据
@@ -1568,10 +1585,14 @@ class QuantDataManager:
                     combined_df = pd.concat([existing_df, df], ignore_index=True)
                     combined_df = combined_df.drop_duplicates(subset=['ts_code', 'trade_date']).sort_values('trade_date')
                     combined_df.to_parquet(file_path, engine='pyarrow', index=False)
+                    
+                    # 显示更新后的日期范围
+                    new_latest_date = combined_df['trade_date'].max()
+                    print(f"  {index_code}: 成功更新 {len(df)} 条记录，最新日期: {new_latest_date}")
                 else:
                     df.to_parquet(file_path, engine='pyarrow', index=False)
-                
-                print(f"  {index_code}: 成功更新 {len(df)} 条记录")
+                    latest_date = df['trade_date'].max()
+                    print(f"  {index_code}: 成功创建文件，保存 {len(df)} 条记录，最新日期: {latest_date}")
                 
                 # API限制控制
                 time.sleep(0.2)
@@ -2115,31 +2136,80 @@ class QuantDataManager:
         print("开始更新所有数据（不含财务三大表）")
         print("=" * 80)
         
+        failed_steps = []
+        
         # 更新各种数据
         print("\n步骤1: 更新基础数据...")
-        self.update_stock_basic()
-        self.update_risk_free_rate(start_date, end_date)
-        self.update_sw_industry_daily(start_date, end_date)
-        self.update_index_daily(None, start_date, end_date)  # type: ignore
-        self.update_index_constituents()
+        try:
+            self.update_stock_basic()
+        except Exception as e:
+            print(f"❌ 更新股票基础信息失败: {e}")
+            failed_steps.append("股票基础信息")
+        
+        try:
+            self.update_risk_free_rate(start_date, end_date)
+        except Exception as e:
+            print(f"❌ 更新无风险利率失败: {e}")
+            failed_steps.append("无风险利率")
+        
+        try:
+            self.update_sw_industry_daily(start_date, end_date)
+        except Exception as e:
+            print(f"❌ 更新申万行业分类失败: {e}")
+            failed_steps.append("申万行业分类")
+        
+        try:
+            self.update_index_daily(None, start_date, end_date)  # type: ignore
+        except Exception as e:
+            print(f"❌ 更新指数日K线失败: {e}")
+            failed_steps.append("指数日K线")
+        
+        try:
+            self.update_index_constituents()
+        except Exception as e:
+            print(f"❌ 更新指数成分股失败: {e}")
+            failed_steps.append("指数成分股")
         
         print("\n步骤2: 更新股票核心数据...")
-        self.update_stock_daily_hfq(start_date, end_date)  # 包含自动前复权转换
-        self.update_stock_moneyflow(start_date, end_date)  # 🆕 资金流向数据
+        try:
+            self.update_stock_daily_hfq(start_date, end_date)  # 包含自动前复权转换
+        except Exception as e:
+            print(f"❌ 更新股票日K线数据失败: {e}")
+            failed_steps.append("股票日K线数据")
+        
+        try:
+            self.update_stock_moneyflow(start_date, end_date)  # 🆕 资金流向数据
+        except Exception as e:
+            print(f"❌ 更新股票资金流向数据失败: {e}")
+            failed_steps.append("股票资金流向数据")
         
         print("\n步骤3: 更新因子模型原材料...")
-        self.update_daily_basic(start_date, end_date)
+        try:
+            self.update_daily_basic(start_date, end_date)
+        except Exception as e:
+            print(f"❌ 更新股票每日基础指标失败: {e}")
+            failed_steps.append("股票每日基础指标")
         # 注意：财务指标数据请使用专门的程序单独更新（每季度一次）
         
         # 可选：申万行业成分股数据（数据量大，更新较慢）
         if include_sw_member:
             print("\n步骤4: 更新申万行业成分股数据（可选）...")
             print("  注意：此步骤可能需要较长时间")
-            self.update_sw_industry_member_latest()
+            try:
+                self.update_sw_industry_member_latest()
+            except Exception as e:
+                print(f"❌ 更新申万行业成分股失败: {e}")
+                failed_steps.append("申万行业成分股")
             # update_sw_l2_member_history() 数据量更大，建议单独运行
         
         print("\n" + "=" * 80)
-        print("✅ 数据更新完成！")
+        if failed_steps:
+            print(f"⚠️  数据更新完成，但有 {len(failed_steps)} 个步骤失败:")
+            for step in failed_steps:
+                print(f"   - {step}")
+            print("\n💡 建议：检查上述失败的步骤，必要时单独运行更新")
+        else:
+            print("✅ 数据更新完成！")
         print("=" * 80)
         
         print("\n📝 后续步骤:")
