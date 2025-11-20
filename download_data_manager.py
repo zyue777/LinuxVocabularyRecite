@@ -474,7 +474,7 @@ class QuantDataManager:
             failed_stocks=failed_stocks
         )
     
-    def _batch_convert_to_qfq(self, stock_list: List[str], max_workers: int = 4, real_prices_map: Dict[str, float] = None):
+    def _batch_convert_to_qfq(self, stock_list: List[str], max_workers: int = 4, real_prices_map: Optional[Dict[str, float]] = None):
         """
         批量转换后复权数据为前复权数据（增量更新）
         
@@ -541,6 +541,8 @@ class QuantDataManager:
                 # 检查是否可以增量更新
                 qfq_file = qfq_dir / f"{ts_code}.parquet"
                 can_append = False
+                last_date = None
+                df_qfq_old = pd.DataFrame()
                 
                 if qfq_file.exists():
                     try:
@@ -589,7 +591,10 @@ class QuantDataManager:
                 else:
                     # 全量重写模式
                     # 调用data_utils中的转换函数
-                    df_qfq, _ = self.convert_hfq_to_qfq(ts_code, str(self.data_center_path), latest_real_price=real_close)
+                    if self.convert_hfq_to_qfq:
+                        df_qfq, _ = self.convert_hfq_to_qfq(ts_code, str(self.data_center_path), latest_real_price=real_close)
+                    else:
+                        return {'ts_code': ts_code, 'status': 'error', 'message': '转换函数未加载'}
                     
                     if df_qfq is not None:
                         df_qfq.to_parquet(qfq_file, engine='pyarrow', index=False)
@@ -1687,6 +1692,9 @@ class QuantDataManager:
             else:
                 end_date = cal_df['cal_date'].max()
                 print(f"✅ Tushare 数据最新到: {end_date}")
+        
+        # Ensure end_date is not None for type checking
+        assert end_date is not None
         
         for index_code in index_codes:
             print(f"\n处理指数: {index_code}")
