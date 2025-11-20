@@ -8,25 +8,26 @@
 import pandas as pd
 import numpy as np
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Tuple
 from datetime import datetime
 
 
-def convert_hfq_to_qfq(ts_code: str, data_center_path: str = None) -> Optional[pd.DataFrame]:
+def convert_hfq_to_qfq(ts_code: str, data_center_path: str = None, latest_real_price: float = None) -> Tuple[Optional[pd.DataFrame], Optional[float]]:
     """
     将后复权数据转换为前复权数据（方案B：实时转换）
     
     原理：
     - 前复权：以最新价格为基准，向前调整历史价格
     - 后复权：以最早价格为基准，向后调整历史价格
-    - 转换公式：qfq_price = hfq_price * (latest_price / hfq_price_at_latest_date)
+    - 转换公式：qfq_price = hfq_price * (latest_real_price / hfq_price_at_latest_date)
     
     Args:
         ts_code: 股票代码
         data_center_path: 数据中心路径，如果为None则使用默认路径
+        latest_real_price: 最新真实收盘价（不复权），用于计算复权因子。如果为None，将无法正确转换。
     
     Returns:
-        前复权DataFrame，如果文件不存在则返回None
+        (前复权DataFrame, 复权因子)，如果文件不存在或失败则返回 (None, None)
     """
     if data_center_path is None:
         data_center_path = Path.cwd() / "quant_data_center"
@@ -36,24 +37,30 @@ def convert_hfq_to_qfq(ts_code: str, data_center_path: str = None) -> Optional[p
     hfq_file = data_center_path / "stock" / "daily_hfq" / f"{ts_code}.parquet"
     
     if not hfq_file.exists():
-        return None
+        return None, None
     
     try:
         # 读取后复权数据
         df_hfq = pd.read_parquet(hfq_file, engine='pyarrow')
         
         if df_hfq.empty:
-            return None
+            return None, None
         
         # 确保按日期排序
         df_hfq = df_hfq.sort_values('trade_date').reset_index(drop=True)
         
-        # 获取最新价格作为基准
-        latest_price = df_hfq.iloc[-1]['close']
+        # 获取后复权数据的最新收盘价
+        hfq_latest_close = df_hfq.iloc[-1]['close']
         
-        # 计算复权因子：最新价格 / 后复权价格
-        # 这样可以将所有历史价格调整到最新价格水平
-        adj_factor = latest_price / df_hfq['close']
+        # 计算复权因子
+        if latest_real_price is not None:
+            # 正确公式：真实最新价 / 后复权最新价
+            adj_factor = latest_real_price / hfq_latest_close
+        else:
+            # 如果未提供真实价格，无法计算正确的因子
+            # 为了兼容性，暂时返回None，或者抛出警告
+            print(f"警告: 转换 {ts_code} 时未提供最新真实价格，无法计算准确的前复权数据")
+            return None, None
         
         # 创建前复权数据副本
         df_qfq = df_hfq.copy()
@@ -64,13 +71,13 @@ def convert_hfq_to_qfq(ts_code: str, data_center_path: str = None) -> Optional[p
             if field in df_qfq.columns:
                 df_qfq[field] = df_hfq[field] * adj_factor
         
-        # 调整涨跌额（change）和涨跌幅（pct_chg）保持不变，因为它们是基于价格的相对变化
+        # 调整涨跌额（change）和涨跌幅（pct_chg）保持不变
         
-        return df_qfq
+        return df_qfq, adj_factor
         
     except Exception as e:
         print(f"转换 {ts_code} 前复权数据失败: {e}")
-        return None
+        return None, None
 
 
 def generate_market_metadata(data_center_path: str = None) -> bool:

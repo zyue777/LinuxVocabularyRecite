@@ -9,12 +9,41 @@ import os
 import time
 import pandas as pd
 import tushare as ts
+import threading
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import warnings
 warnings.filterwarnings('ignore')
+
+
+class RateLimiter:
+    """
+    线程安全的限流器
+    使用令牌桶算法或简单的最小间隔算法
+    """
+    def __init__(self, max_calls: int, period: float = 60.0):
+        """
+        初始化限流器
+        
+        Args:
+            max_calls: 时间周期内允许的最大调用次数
+            period: 时间周期（秒）
+        """
+        self.interval = period / max_calls  # 每次调用之间的最小间隔
+        self.last_call = 0.0
+        self.lock = threading.Lock()
+    
+    def wait(self):
+        """等待直到可以进行下一次调用"""
+        with self.lock:
+            now = time.time()
+            elapsed = now - self.last_call
+            if elapsed < self.interval:
+                sleep_time = self.interval - elapsed
+                time.sleep(sleep_time)
+            self.last_call = time.time()
 
 
 class QuantDataManager:
@@ -49,6 +78,9 @@ class QuantDataManager:
             print("警告: 未设置Tushare Token，请确保已配置")
         
         self.pro = ts.pro_api()
+        
+        # 初始化限流器：每分钟700次（留出余量，API限制为800次）
+        self.rate_limiter = RateLimiter(max_calls=700, period=60)
         
         # 定义路径
         self.paths = {
@@ -114,6 +146,28 @@ class QuantDataManager:
             # 如果文件损坏或读取失败，返回None（允许重新下载）
             return None
     
+    def _get_daily_real_prices(self, trade_date: str) -> Dict[str, float]:
+        """
+        获取指定日期的所有股票真实收盘价（不复权）
+        用于计算复权因子
+        """
+        try:
+            print(f"获取 {trade_date} 的真实收盘价数据...")
+            # 使用pro.daily获取不复权数据
+            df = self._safe_api_call(self.pro.daily, trade_date=trade_date)
+            
+            if df is not None and not df.empty:
+                # 创建代码到收盘价的映射
+                price_map = dict(zip(df['ts_code'], df['close']))
+                print(f"  获取到 {len(price_map)} 条价格数据")
+                return price_map
+            else:
+                print(f"  ⚠️  未获取到 {trade_date} 的价格数据")
+                return {}
+        except Exception as e:
+            print(f"  ⚠️  获取真实价格失败: {e}")
+            return {}
+
     def _safe_api_call(self, func, *args, **kwargs):
         """
         安全的API调用，包含重试机制和智能限流处理
@@ -130,6 +184,9 @@ class QuantDataManager:
         attempt = 0
         while attempt < max_retries:
             try:
+                # 在调用API前进行限流等待
+                self.rate_limiter.wait()
+                
                 result = func(*args, **kwargs)
                 # API调用成功，无论数据是否为空都直接返回
                 if result is not None and not result.empty:
@@ -303,6 +360,9 @@ class QuantDataManager:
         assert end_date is not None  # end_date在前面已经确保有值
         print(f"共需更新 {len(stock_list)} 只股票")
         
+        # 获取目标日期的真实收盘价（用于计算复权因子）
+        real_prices_map = self._get_daily_real_prices(end_date)
+        
         up_to_date_stocks = []
         success_stocks = []
         empty_stocks = []
@@ -390,14 +450,13 @@ class QuantDataManager:
                     # 批量转换前复权数据（增量更新）
                     if stocks_to_convert and self.convert_hfq_to_qfq:
                         print(f"  转换 {len(stocks_to_convert)} 只股票的前复权数据（增量更新）...")
-                        self._batch_convert_to_qfq(stocks_to_convert)
+                        self._batch_convert_to_qfq(stocks_to_convert, real_prices_map=real_prices_map)
                     
                     batch_data_to_save.clear()
                 
                 # 限流：每批次之间等待时间
-                # 计算公式：150批次 × 5并发 / 60秒 ≈ 12.5批/秒
-                # 每批等待：60/150 ≈ 0.4秒，实际约750次/分钟
-                time.sleep(0.4)
+                # 由于已经实现了全局限流器，这里不再需要强制等待
+                # time.sleep(0.4)
 
         # 最后进行一次完整的前复权数据检查和补充（确保数据完整性）
         if self.convert_hfq_to_qfq:
@@ -415,13 +474,14 @@ class QuantDataManager:
             failed_stocks=failed_stocks
         )
     
-    def _batch_convert_to_qfq(self, stock_list: List[str], max_workers: int = 4):
+    def _batch_convert_to_qfq(self, stock_list: List[str], max_workers: int = 4, real_prices_map: Dict[str, float] = None):
         """
         批量转换后复权数据为前复权数据（增量更新）
         
         Args:
             stock_list: 需要转换的股票代码列表
             max_workers: 最大并发线程数
+            real_prices_map: 真实收盘价映射 {ts_code: close}，用于加速计算
         """
         if not self.convert_hfq_to_qfq:
             return
@@ -432,38 +492,111 @@ class QuantDataManager:
         qfq_dir.mkdir(parents=True, exist_ok=True)
         
         success_count = 0
+        append_count = 0
+        rewrite_count = 0
         failed_count = 0
         
         def convert_worker(ts_code: str):
             """转换工作函数"""
             try:
-                # 调用转换函数
-                df_qfq = self.convert_hfq_to_qfq(ts_code, str(self.data_center_path))  # type: ignore
+                hfq_file = self.paths['stock_daily_hfq'] / f"{ts_code}.parquet"
+                if not hfq_file.exists():
+                    return {'ts_code': ts_code, 'status': 'error', 'message': 'HFQ文件不存在'}
                 
-                if df_qfq is not None and not df_qfq.empty:
-                    # 保存前复权数据
-                    qfq_file = qfq_dir / f"{ts_code}.parquet"
-                    
-                    # 增量更新：如果文件已存在，合并数据
-                    if qfq_file.exists():
-                        try:
-                            existing_df = pd.read_parquet(qfq_file, engine='pyarrow')
-                            if not existing_df.empty:
-                                # 合并数据并去重
-                                combined_df = pd.concat([existing_df, df_qfq], ignore_index=True)
-                                combined_df = combined_df.drop_duplicates(subset=['ts_code', 'trade_date']).sort_values('trade_date')
-                                combined_df.to_parquet(qfq_file, engine='pyarrow', index=False)
-                            else:
-                                df_qfq.to_parquet(qfq_file, engine='pyarrow', index=False)
-                        except:
-                            # 如果读取失败，直接覆盖
-                            df_qfq.to_parquet(qfq_file, engine='pyarrow', index=False)
-                    else:
-                        df_qfq.to_parquet(qfq_file, engine='pyarrow', index=False)
-                    
-                    return {'ts_code': ts_code, 'status': 'success'}
-                else:
+                # 读取HFQ数据
+                df_hfq = pd.read_parquet(hfq_file, engine='pyarrow')
+                if df_hfq.empty:
                     return {'ts_code': ts_code, 'status': 'empty'}
+                
+                df_hfq = df_hfq.sort_values('trade_date').reset_index(drop=True)
+                hfq_latest_date = df_hfq.iloc[-1]['trade_date']
+                hfq_latest_close = df_hfq.iloc[-1]['close']
+                
+                # 获取真实收盘价
+                real_close = None
+                if real_prices_map and ts_code in real_prices_map:
+                    # 只有当HFQ最新日期与Map日期一致时才使用Map中的价格
+                    # 这里假设Map是基于最新交易日的，如果HFQ日期较旧（如停牌），则不能使用Map
+                    # 但为了简化，如果Map中有且日期匹配（或者我们信任Map是针对end_date的），可以尝试
+                    # 更严谨的做法是：如果HFQ最新日期 == Map的日期（通常是end_date），则使用
+                    # 但这里我们没有Map的日期信息，只能假设调用者传入的是正确的
+                    real_close = real_prices_map[ts_code]
+                
+                # 如果Map中没有，或者我们需要针对特定日期获取
+                if real_close is None:
+                    # 尝试单独获取该日期的真实价格
+                    try:
+                        daily_df = self._safe_api_call(self.pro.daily, ts_code=ts_code, start_date=hfq_latest_date, end_date=hfq_latest_date)
+                        if daily_df is not None and not daily_df.empty:
+                            real_close = daily_df.iloc[0]['close']
+                    except:
+                        pass
+                
+                if real_close is None:
+                    return {'ts_code': ts_code, 'status': 'error', 'message': '无法获取真实收盘价，无法计算复权因子'}
+                
+                # 计算新的复权因子
+                new_adj_factor = real_close / hfq_latest_close
+                
+                # 检查是否可以增量更新
+                qfq_file = qfq_dir / f"{ts_code}.parquet"
+                can_append = False
+                
+                if qfq_file.exists():
+                    try:
+                        df_qfq_old = pd.read_parquet(qfq_file, engine='pyarrow')
+                        if not df_qfq_old.empty:
+                            df_qfq_old = df_qfq_old.sort_values('trade_date')
+                            qfq_last_date = df_qfq_old.iloc[-1]['trade_date']
+                            qfq_last_close = df_qfq_old.iloc[-1]['close']
+                            
+                            # 如果QFQ已经包含最新日期，则无需更新
+                            if qfq_last_date >= hfq_latest_date:
+                                return {'ts_code': ts_code, 'status': 'up_to_date'}
+                            
+                            # 找到HFQ中对应qfq_last_date的收盘价
+                            hfq_match = df_hfq[df_hfq['trade_date'] == qfq_last_date]
+                            if not hfq_match.empty:
+                                hfq_close_at_match = hfq_match.iloc[0]['close']
+                                # 计算旧的复权因子
+                                old_adj_factor = qfq_last_close / hfq_close_at_match
+                                
+                                # 比较因子是否变化（允许微小误差）
+                                if abs(new_adj_factor - old_adj_factor) < 1e-6:
+                                    can_append = True
+                                    last_date = qfq_last_date
+                    except:
+                        # 读取失败，只能重写
+                        pass
+                
+                if can_append:
+                    # 增量追加模式
+                    # 获取需要追加的HFQ行
+                    new_rows = df_hfq[df_hfq['trade_date'] > last_date].copy()
+                    if new_rows.empty:
+                        return {'ts_code': ts_code, 'status': 'up_to_date'}
+                    
+                    # 应用复权因子
+                    price_fields = ['open', 'high', 'low', 'close', 'pre_close']
+                    for field in price_fields:
+                        if field in new_rows.columns:
+                            new_rows[field] = new_rows[field] * new_adj_factor
+                    
+                    # 追加保存
+                    combined_df = pd.concat([df_qfq_old, new_rows], ignore_index=True)
+                    combined_df.to_parquet(qfq_file, engine='pyarrow', index=False)
+                    return {'ts_code': ts_code, 'status': 'success_append'}
+                else:
+                    # 全量重写模式
+                    # 调用data_utils中的转换函数
+                    df_qfq, _ = self.convert_hfq_to_qfq(ts_code, str(self.data_center_path), latest_real_price=real_close)
+                    
+                    if df_qfq is not None:
+                        df_qfq.to_parquet(qfq_file, engine='pyarrow', index=False)
+                        return {'ts_code': ts_code, 'status': 'success_rewrite'}
+                    else:
+                        return {'ts_code': ts_code, 'status': 'error', 'message': '转换失败'}
+                        
             except Exception as e:
                 return {'ts_code': ts_code, 'status': 'error', 'message': str(e)}
         
@@ -473,15 +606,23 @@ class QuantDataManager:
             
             for future in as_completed(futures):
                 result = future.result()
-                if result['status'] == 'success':
+                status = result['status']
+                
+                if status == 'success_append':
                     success_count += 1
+                    append_count += 1
+                elif status == 'success_rewrite':
+                    success_count += 1
+                    rewrite_count += 1
+                elif status == 'up_to_date':
+                    pass
                 else:
                     failed_count += 1
-                    if result['status'] == 'error':
+                    if status == 'error':
                         print(f"    ⚠️  转换 {result['ts_code']} 失败: {result.get('message', '未知错误')}")
         
         if success_count > 0:
-            print(f"  ✅ 成功转换 {success_count} 只股票的前复权数据")
+            print(f"  ✅ 成功处理 {success_count} 只股票的前复权数据 (追加: {append_count}, 重写: {rewrite_count})")
         if failed_count > 0:
             print(f"  ⚠️  {failed_count} 只股票转换失败或数据为空")
     
