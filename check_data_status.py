@@ -548,8 +548,9 @@ class DataStatusChecker:
                     test_file = hfq_files[0]
                     test_code = test_file.stem
                     try:
-                        result = convert_hfq_to_qfq(test_code, str(self.data_center_path))
-                        if result is not None and not result.empty:
+                        # convert_hfq_to_qfq returns a tuple (DataFrame, factor)
+                        df_qfq, adj_factor = convert_hfq_to_qfq(test_code, str(self.data_center_path))
+                        if df_qfq is not None and not df_qfq.empty:
                             status['test_result'] = f'✅ 测试通过 ({test_code})'
                         else:
                             status['test_result'] = f'⚠️  测试返回空数据 ({test_code})'
@@ -675,6 +676,82 @@ class DataStatusChecker:
         
         return status
     
+    def check_global_indices(self) -> Dict[str, Any]:
+        """检查全球重要指数日K线"""
+        dir_path = self.data_center_path / "index" / "global_daily"
+        
+        status = {
+            'name': '全球重要指数日K线',
+            'path': str(dir_path),
+            'exists': dir_path.exists(),
+            'latest_date': None,
+            'file_count': 0,
+            'indices': []
+        }
+        
+        if dir_path.exists():
+            files = list(dir_path.glob("*.parquet"))
+            status['file_count'] = len(files)
+            
+            if files:
+                latest_dates = []
+                for file_path in files:
+                    try:
+                        latest_date = self._get_latest_date(file_path, 'trade_date')
+                        if latest_date:
+                            latest_dates.append(latest_date)
+                            index_code = file_path.stem
+                            status['indices'].append({
+                                'code': index_code,
+                                'latest_date': latest_date
+                            })
+                    except:
+                        continue
+                
+                if latest_dates:
+                    status['latest_date'] = max(latest_dates)
+        
+        return status
+    
+    def check_hk_stock_daily(self) -> Dict[str, Any]:
+        """检查港股通个股日K线（后复权）"""
+        dir_path = self.data_center_path / "stock_hk" / "daily_hfq"
+        
+        status = {
+            'name': '港股通日K线(后复权)',
+            'path': str(dir_path),
+            'exists': dir_path.exists(),
+            'latest_date': None,
+            'file_count': 0,
+            'sample_stocks': []
+        }
+        
+        if dir_path.exists():
+            files = list(dir_path.glob("*.parquet"))
+            status['file_count'] = len(files)
+            
+            if files:
+                latest_dates = []
+                # 采样检查前5只股票
+                sample_files = files[:5]
+                for file_path in sample_files:
+                    try:
+                        latest_date = self._get_latest_date(file_path, 'trade_date')
+                        if latest_date:
+                            latest_dates.append(latest_date)
+                            stock_code = file_path.stem
+                            status['sample_stocks'].append({
+                                'code': stock_code,
+                                'latest_date': latest_date
+                            })
+                    except:
+                        continue
+                
+                if latest_dates:
+                    status['latest_date'] = max(latest_dates)
+        
+        return status
+    
     def check_all(self) -> List[Dict[str, Any]]:
         """检查所有数据状态"""
         print("\n" + "="*80)
@@ -690,9 +767,14 @@ class DataStatusChecker:
         all_status.append(self.check_daily_basic())
         all_status.append(self.check_fina_indicator())
         
+        
         # 指数数据
         all_status.append(self.check_index_daily())
+        all_status.append(self.check_global_indices())  # 🆕 新增
         all_status.append(self.check_index_constituents())
+        
+        # 港股数据 🆕 新增
+        all_status.append(self.check_hk_stock_daily())
         
         # 因子数据
         all_status.append(self.check_risk_free_rate())
@@ -852,6 +934,110 @@ class DataStatusChecker:
         print("\n" + "="*80)
         print("✅ 数据状态检查完成")
         print("="*80)
+        
+        # 添加数据库整体汇总统计
+        self._print_database_summary(status_list)
+    
+    def _print_database_summary(self, status_list: List[Dict[str, Any]]):
+        """打印数据库整体汇总统计"""
+        print("\n" + "="*80)
+        print("📊 数据中心整体汇总")
+        print("="*80)
+        
+        # 统计各类数据
+        total_files = 0
+        total_records = 0
+        date_ranges = {}
+        
+        for status in status_list:
+            name = status.get('name', '')
+            
+            # 统计文件数
+            if 'file_count' in status and status['file_count'] > 0:
+                total_files += status['file_count']
+            
+            # 统计记录数
+            if 'count' in status and status['count'] > 0:
+                total_records += status['count']
+            if 'total_records' in status and status['total_records'] > 0:
+                total_records += status['total_records']
+            
+            # 收集日期范围
+            if status.get('exists') and status.get('latest_date'):
+                latest = status['latest_date']
+                date_ranges[name] = {'latest': latest}
+                
+                # 如果有 date_range 信息
+                if 'date_range' in status and status['date_range']:
+                    dr = status['date_range']
+                    if 'start' in dr:
+                        date_ranges[name]['start'] = dr['start']
+                    if 'end' in dr:
+                        date_ranges[name]['end'] = dr['end']
+        
+        # 打印统计信息
+        print(f"\n【数据规模】")
+        print(f"  总文件数: {total_files:,} 个")
+        print(f"  总记录数: {total_records:,} 条（估算）")
+        
+        # 打印核心数据的日期范围
+        print(f"\n【核心数据最新状态】")
+        
+        
+        core_data = [
+            ('股票基础信息', ['股票基础信息']),
+            ('股票日K线(后复权)', ['股票日K线', '后复权']),
+            ('股票资金流向', ['股票资金流向']),
+            ('港股通日K线(后复权)', ['港股通', '后复权']),
+            ('指数日K线', ['指数日K线']),
+            ('全球重要指数日K线', ['全球重要指数']),
+            ('股票每日基础指标', ['股票每日基础指标']),
+            ('无风险利率', ['无风险利率']),
+        ]
+        
+        for display_name, keywords in core_data:
+            for name, dates in date_ranges.items():
+                # 检查所有关键词是否都在名称中
+                if all(kw in name for kw in keywords):
+                    latest = dates.get('latest', '')
+                    if latest:
+                        formatted = self._format_date(latest)
+                        
+                        # 如果有起始日期，也显示
+                        if 'start' in dates:
+                            start = self._format_date(dates['start'])
+                            print(f"  {display_name}: {start} ~ {formatted}")
+                        else:
+                            print(f"  {display_name}: 最新 {formatted}")
+                    break
+        
+        # 打印因子数据状态
+        print(f"\n【因子数据最新状态】")
+        factor_data = [
+            'Fama-French三因子',
+            'Fama-French五因子',
+            '中国版三因子',
+            '自定义因子'
+        ]
+        
+        for factor_name in factor_data:
+            for name, dates in date_ranges.items():
+                if factor_name in name:
+                    latest = dates.get('latest', '')
+                    if latest:
+                        formatted = self._format_date(latest)
+                        print(f"  {factor_name}: 最新 {formatted}")
+                    break
+        
+        print("\n" + "="*80)
+    
+    def _format_date(self, date_str: str) -> str:
+        """格式化日期字符串"""
+        if not date_str:
+            return ''
+        if len(date_str) == 8:  # YYYYMMDD
+            return f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
+        return date_str
     
     def check_data_completeness(self) -> Dict[str, Any]:
         """

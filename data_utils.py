@@ -12,7 +12,7 @@ from typing import Optional, List, Tuple
 from datetime import datetime
 
 
-def convert_hfq_to_qfq(ts_code: str, data_center_path: str = None, latest_real_price: float = None) -> Tuple[Optional[pd.DataFrame], Optional[float]]:
+def convert_hfq_to_qfq(ts_code: str, data_center_path: Optional[str] = None, latest_real_price: Optional[float] = None) -> Tuple[Optional[pd.DataFrame], Optional[float]]:
     """
     将后复权数据转换为前复权数据（方案B：实时转换）
     
@@ -30,11 +30,11 @@ def convert_hfq_to_qfq(ts_code: str, data_center_path: str = None, latest_real_p
         (前复权DataFrame, 复权因子)，如果文件不存在或失败则返回 (None, None)
     """
     if data_center_path is None:
-        data_center_path = Path.cwd() / "quant_data_center"
+        data_center_path_obj = Path.cwd() / "quant_data_center"
     else:
-        data_center_path = Path(data_center_path)
+        data_center_path_obj = Path(data_center_path)
     
-    hfq_file = data_center_path / "stock" / "daily_hfq" / f"{ts_code}.parquet"
+    hfq_file = data_center_path_obj / "stock" / "daily_hfq" / f"{ts_code}.parquet"
     
     if not hfq_file.exists():
         return None, None
@@ -80,7 +80,7 @@ def convert_hfq_to_qfq(ts_code: str, data_center_path: str = None, latest_real_p
         return None, None
 
 
-def generate_market_metadata(data_center_path: str = None) -> bool:
+def generate_market_metadata(data_center_path: Optional[str] = None) -> bool:
     """
     生成市场元数据文件
     
@@ -95,17 +95,17 @@ def generate_market_metadata(data_center_path: str = None) -> bool:
         是否成功生成
     """
     if data_center_path is None:
-        data_center_path = Path.cwd() / "quant_data_center"
+        data_center_path_obj = Path.cwd() / "quant_data_center"
     else:
-        data_center_path = Path(data_center_path)
+        data_center_path_obj = Path(data_center_path)
     
     # 创建market_metadata目录
-    metadata_dir = data_center_path / "market_metadata"
+    metadata_dir = data_center_path_obj / "market_metadata"
     metadata_dir.mkdir(parents=True, exist_ok=True)
     
     try:
         # 读取股票基础信息
-        stock_basic_file = data_center_path / "stock_basic.parquet"
+        stock_basic_file = data_center_path_obj / "stock_basic.parquet"
         if not stock_basic_file.exists():
             print("❌ 股票基础信息文件不存在，请先运行 update_stock_basic()")
             return False
@@ -190,7 +190,7 @@ def generate_market_metadata(data_center_path: str = None) -> bool:
         return False
 
 
-def get_chinext_stocks(data_center_path: str = None) -> List[str]:
+def get_chinext_stocks(data_center_path: Optional[str] = None) -> List[str]:
     """
     获取创业板股票列表
     
@@ -201,16 +201,16 @@ def get_chinext_stocks(data_center_path: str = None) -> List[str]:
         创业板股票代码列表
     """
     if data_center_path is None:
-        data_center_path = Path.cwd() / "quant_data_center"
+        data_center_path_obj = Path.cwd() / "quant_data_center"
     else:
-        data_center_path = Path(data_center_path)
+        data_center_path_obj = Path(data_center_path)
     
-    chinext_file = data_center_path / "market_metadata" / "chinext_stocks.parquet"
+    chinext_file = data_center_path_obj / "market_metadata" / "chinext_stocks.parquet"
     
     if not chinext_file.exists():
         # 如果文件不存在，尝试生成
         print("创业板股票标记文件不存在，正在生成...")
-        if generate_market_metadata(data_center_path):
+        if generate_market_metadata(str(data_center_path_obj)):
             # 重新读取
             pass
         else:
@@ -225,7 +225,7 @@ def get_chinext_stocks(data_center_path: str = None) -> List[str]:
         return []
 
 
-def filter_stocks_by_market(market: str, data_center_path: str = None) -> pd.DataFrame:
+def filter_stocks_by_market(market: str, data_center_path: Optional[str] = None) -> pd.DataFrame:
     """
     按市场筛选股票
     
@@ -237,16 +237,16 @@ def filter_stocks_by_market(market: str, data_center_path: str = None) -> pd.Dat
         符合条件的股票DataFrame
     """
     if data_center_path is None:
-        data_center_path = Path.cwd() / "quant_data_center"
+        data_center_path_obj = Path.cwd() / "quant_data_center"
     else:
-        data_center_path = Path(data_center_path)
+        data_center_path_obj = Path(data_center_path)
     
-    market_map_file = data_center_path / "market_metadata" / "stock_market_map.parquet"
+    market_map_file = data_center_path_obj / "market_metadata" / "stock_market_map.parquet"
     
     if not market_map_file.exists():
         # 如果文件不存在，尝试生成
         print("股票市场映射文件不存在，正在生成...")
-        if not generate_market_metadata(data_center_path):
+        if not generate_market_metadata(str(data_center_path_obj)):
             return pd.DataFrame()
     
     try:

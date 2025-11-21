@@ -9,6 +9,7 @@ import os
 import time
 import pandas as pd
 import tushare as ts
+import akshare as ak
 import threading
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -84,20 +85,27 @@ class QuantDataManager:
         
         # 定义路径
         self.paths = {
-            'stock_daily_hfq': self.data_center_path / "stock" / "daily_hfq",
-            'stock_daily_qfq': self.data_center_path / "stock" / "daily_qfq",  # 🆕 前复权数据目录
-            'stock_daily_basic': self.data_center_path / "stock" / "daily_basic",
-            'stock_fina_indicator': self.data_center_path / "stock" / "fina_indicator",
-            'stock_financial_tables': self.data_center_path / "stock" / "financial_tables",  # 保留路径定义，供外部单独文件使用
-            'stock_moneyflow': self.data_center_path / "stock" / "moneyflow",
-            'index_daily': self.data_center_path / "index" / "daily",
-            'index_constituents': self.data_center_path / "index" / "constituents",
-            'factors_ff5': self.data_center_path / "factors" / "fama_french_5",
-            'factors_rfr': self.data_center_path / "factors" / "risk_free",
-            'industry_sw': self.data_center_path / "classification" / "industry_sw",
-            'market_margin_total': self.data_center_path / "market" / "margin_total",  # 🆕 融资融券总额
-            'market_margin_detail': self.data_center_path / "market" / "margin_detail",  # 🆕 融资融券明细
-            'market_hsgt': self.data_center_path / "market" / "hsgt"  # 🆕 沪深港通资金流向
+            'stock_basic': self.data_center_path / "stock/basic",
+            'stock_daily_hfq': self.data_center_path / "stock/daily_hfq",
+            'stock_daily_qfq': self.data_center_path / "stock/daily_qfq",
+            'stock_moneyflow': self.data_center_path / "stock/moneyflow",
+            'stock_hk_daily_hfq': self.data_center_path / "stock_hk/daily_hfq",  # 🆕 港股后复权
+            'stock_hk_daily_qfq': self.data_center_path / "stock_hk/daily_qfq",  # 🆕 港股前复权
+            'index_daily': self.data_center_path / "index/daily",
+            'index_global_daily': self.data_center_path / "index/global_daily",  # 🆕 全球指数
+            'index_constituents': self.data_center_path / "index/constituents",
+            'index_weight': self.data_center_path / "index/weight",
+            'factors_ff5': self.data_center_path / "factors/fama_french_5",
+            'factors_rfr': self.data_center_path / "factors/risk_free",
+            'industry_sw': self.data_center_path / "classification/industry_sw",
+            'stock_daily_basic': self.data_center_path / "stock/daily_basic",
+            'stock_fina_indicator': self.data_center_path / "stock/fina_indicator",
+            'market_margin_total': self.data_center_path / "market/margin_total",
+            'market_margin_detail': self.data_center_path / "market/margin_detail",
+            'market_hsgt': self.data_center_path / "market/hsgt",
+            'financial_income': self.data_center_path / "stock/financial_tables/income",
+            'financial_balancesheet': self.data_center_path / "stock/financial_tables/balancesheet",
+            'financial_cashflow': self.data_center_path / "stock/financial_tables/cashflow",
         }
         
         # 确保所有目录存在
@@ -159,14 +167,42 @@ class QuantDataManager:
             if df is not None and not df.empty:
                 # 创建代码到收盘价的映射
                 price_map = dict(zip(df['ts_code'], df['close']))
-                print(f"  获取到 {len(price_map)} 条价格数据")
+                print(f"  ✅ 获取到 {len(price_map)} 条价格数据")
                 return price_map
             else:
-                print(f"  ⚠️  未获取到 {trade_date} 的价格数据")
+                print(f"  ⚠️  {trade_date} 无交易数据（可能是非交易日或数据尚未更新）")
+                print(f"     这不影响后续处理，将使用历史复权因子")
                 return {}
         except Exception as e:
             print(f"  ⚠️  获取真实价格失败: {e}")
             return {}
+    
+    def _get_tushare_latest_date(self) -> str:
+        """
+        获取Tushare实际最新数据日期
+        通过查询上证指数获取实际可用的最新交易日
+        
+        Returns:
+            最新数据日期 (YYYYMMDD格式)
+        """
+        try:
+            # 查询上证指数的最新数据，获取实际最新日期
+            df_latest = self._safe_api_call(
+                self.pro.index_daily,
+                ts_code='000001.SH',  # 上证指数
+                start_date=(datetime.now() - timedelta(days=30)).strftime('%Y%m%d'),
+                end_date=datetime.now().strftime('%Y%m%d')
+            )
+            
+            if df_latest is not None and not df_latest.empty:
+                latest_date = df_latest['trade_date'].max()
+                return latest_date
+            else:
+                # 如果查询失败，使用昨天作为保底
+                return (datetime.now() - timedelta(days=1)).strftime('%Y%m%d')
+        except Exception as e:
+            # 查询失败，使用昨天作为保底
+            return (datetime.now() - timedelta(days=1)).strftime('%Y%m%d')
 
     def _safe_api_call(self, func, *args, **kwargs):
         """
@@ -235,6 +271,10 @@ class QuantDataManager:
                 # 获取本地最新日期
                 local_latest_date = self._get_latest_date(file_path, 'trade_date')
                 if local_latest_date:
+                    # 检查数据是否已经是最新
+                    if local_latest_date >= end_date:
+                        return {'ts_code': ts_code, 'status': 'up_to_date'}
+                    
                     # 从最新日期的下一天开始（Tushare API会自动处理交易日历）
                     latest_dt = datetime.strptime(local_latest_date, '%Y%m%d')
                     start_date_actual = (latest_dt + timedelta(days=1)).strftime('%Y%m%d')
@@ -269,6 +309,10 @@ class QuantDataManager:
                 # 获取本地最新日期
                 local_latest_date = self._get_latest_date(file_path, 'trade_date')
                 if local_latest_date:
+                    # 检查数据是否已经是最新
+                    if local_latest_date >= end_date:
+                        return {'ts_code': ts_code, 'status': 'up_to_date'}
+                    
                     # 从最新日期的下一天开始（Tushare API会自动处理交易日历）
                     latest_dt = datetime.strptime(local_latest_date, '%Y%m%d')
                     start_date_actual = (latest_dt + timedelta(days=1)).strftime('%Y%m%d')
@@ -320,21 +364,14 @@ class QuantDataManager:
         print("注意: 已限制API调用频率，约750次/分钟")
         print("=" * 60)
         
-        # ✅ 优化：先获取 Tushare 最新交易日（避免周末/节假日无效请求）
+        # 🎯 直接获取Tushare实际最新数据日期
+        print(f"📅 初始 end_date 参数: {end_date}")
         if end_date is None:
-            print("获取 Tushare 最新交易日...")
-            cal_df = self._safe_api_call(self.pro.trade_cal,
-                                        exchange='SSE',
-                                        is_open='1',
-                                        start_date=(datetime.now() - timedelta(days=10)).strftime('%Y%m%d'),
-                                        end_date=datetime.now().strftime('%Y%m%d'))
-            
-            if cal_df is None or cal_df.empty:
-                print("⚠️  无法获取交易日历，使用当前日期")
-                end_date = datetime.now().strftime('%Y%m%d')
-            else:
-                end_date = cal_df['cal_date'].max()
-                print(f"✅ Tushare 数据最新到: {end_date}")
+            print("查询 Tushare 实际最新数据日期...")
+            end_date = self._get_tushare_latest_date()
+            print(f"✅ Tushare 实际最新数据日期: {end_date}")
+        else:
+            print(f"使用指定的 end_date: {end_date}")
         
         # 获取股票列表
         if stock_list is None:
@@ -360,7 +397,49 @@ class QuantDataManager:
         assert end_date is not None  # end_date在前面已经确保有值
         print(f"共需更新 {len(stock_list)} 只股票")
         
+        # 🚀 优化：全局预检查 - 采样检查是否需要更新
+        print(f"\n检查本地数据状态（采样检查前100只股票）...")
+        print(f"目标更新日期: {end_date}")
+        hfq_dir = self.paths['stock_daily_hfq']
+        sample_size = min(100, len(stock_list))
+        sample_stocks = stock_list[:sample_size]
+        
+        up_to_date_count_sample = 0
+        for ts_code in sample_stocks:
+            file_path = hfq_dir / f"{ts_code}.parquet"
+            if file_path.exists():
+                local_latest_date = self._get_latest_date(file_path, 'trade_date')
+                if local_latest_date and local_latest_date >= end_date:
+                    up_to_date_count_sample += 1
+        
+        # 如果采样中超过95%的股票都是最新的，说明整体数据已经是最新
+        if up_to_date_count_sample >= sample_size * 0.95:
+            print(f"✅ 采样检查: {up_to_date_count_sample}/{sample_size} 只股票数据已是最新")
+            print(f"✅ 数据已经更新到 {end_date}，无需重复下载")
+            print(f"\n跳过批量下载，直接进行前复权数据同步...")
+            
+            # 直接进行前复权数据同步
+            if self.convert_hfq_to_qfq:
+                print("\n" + "=" * 60)
+                print("检查前复权数据完整性...")
+                print("=" * 60)
+                self._sync_qfq_data()
+            
+            # 生成报告（所有股票都是up_to_date）
+            self._generate_download_report(
+                data_type='股票日K线(后复权)',
+                total_count=len(stock_list),
+                success_count=0,
+                up_to_date_count=len(stock_list),
+                empty_stocks=[],
+                failed_stocks=[]
+            )
+            return
+        else:
+            print(f"📊 采样检查: {up_to_date_count_sample}/{sample_size} 只股票已是最新，继续检查其他股票...")
+        
         # 获取目标日期的真实收盘价（用于计算复权因子）
+        # 只有在确实需要更新时才获取
         real_prices_map = self._get_daily_real_prices(end_date)
         
         up_to_date_stocks = []
@@ -473,6 +552,219 @@ class QuantDataManager:
             empty_stocks=empty_stocks,
             failed_stocks=failed_stocks
         )
+
+    def _fetch_hk_daily_hfq_worker(self, ts_code: str, start_date: str, end_date: str, stock_info: Dict[str, Any]) -> Dict[str, Any]:
+        """并发工作函数：获取单只港股的后复权日K线数据 (使用 Akshare)"""
+        return self._fetch_hk_daily_worker_generic(ts_code, start_date, end_date, stock_info, 'hfq', self.paths['stock_hk_daily_hfq'])
+
+    def update_hk_stock_daily_hfq(self, start_date: Optional[str] = None, end_date: Optional[str] = None, 
+                                 stock_list: Optional[List[str]] = None, batch_size: int = 150, max_workers: int = 5):
+        """
+        更新港股通个股日K线数据（后复权）
+        使用 Tushare 获取列表，Akshare 获取复权数据
+        
+        Args:
+            start_date: 开始日期 (YYYYMMDD)
+            end_date: 结束日期 (YYYYMMDD)
+            stock_list: 股票代码列表，如果为None则获取所有港股
+            batch_size: 批处理大小
+            max_workers: 最大并发线程数
+        """
+        print("=" * 60)
+        print("开始更新港股通个股日K线数据（高并发模式 - Akshare源）")
+        print(f"最大并发线程数: {max_workers}")
+        print("=" * 60)
+        
+        # 确保目录存在
+        self.paths['stock_hk_daily_hfq'].mkdir(parents=True, exist_ok=True)
+        
+        # 🎯 直接获取Tushare实际最新数据日期
+        if end_date is None:
+            print("查询 Tushare 实际最新数据日期...")
+            end_date = self._get_tushare_latest_date()
+            print(f"✅ Tushare 实际最新数据日期: {end_date}")
+        
+        # 获取港股列表 (使用 Tushare)
+        if stock_list is None:
+            print("获取港股列表 (Tushare)...")
+            # 使用 hk_basic 获取港股列表
+            stock_basic_df = self._safe_api_call(self.pro.hk_basic, list_status='L')
+            
+            if stock_basic_df is None:
+                print("获取港股列表失败")
+                return
+            stock_list = stock_basic_df['ts_code'].tolist()
+            stock_info = dict(zip(stock_basic_df['ts_code'], stock_basic_df['list_date']))
+        else:
+            stock_info = {} # 如果指定列表，暂时不获取上市日期，使用默认
+        
+        # 类型守护
+        assert stock_list is not None
+        assert end_date is not None
+        print(f"共需更新 {len(stock_list)} 只港股")
+        
+        # 🚀 优化：全局预检查
+        print(f"\n检查本地数据状态（采样检查前100只股票）...")
+        print(f"目标更新日期: {end_date}")
+        hfq_dir = self.paths['stock_hk_daily_hfq']
+        sample_size = min(100, len(stock_list))
+        sample_stocks = stock_list[:sample_size]
+        
+        up_to_date_count_sample = 0
+        for ts_code in sample_stocks:
+            file_path = hfq_dir / f"{ts_code}.parquet"
+            if file_path.exists():
+                local_latest_date = self._get_latest_date(file_path, 'trade_date')
+                if local_latest_date and local_latest_date >= end_date:
+                    up_to_date_count_sample += 1
+        
+        if up_to_date_count_sample >= sample_size * 0.95:
+            print(f"✅ 采样检查: {up_to_date_count_sample}/{sample_size} 只股票数据已是最新")
+            print(f"✅ 数据已经更新到 {end_date}，无需重复下载")
+            return
+        else:
+            print(f"📊 采样检查: {up_to_date_count_sample}/{sample_size} 只股票已是最新，继续检查其他股票...")
+        
+        # 港股后复权下载
+        self._process_hk_download_batch(stock_list, start_date, end_date, stock_info, 'hfq', self.paths['stock_hk_daily_hfq'], max_workers, batch_size, "后复权")
+
+    def _process_hk_download_batch(self, stock_list, start_date, end_date, stock_info, adj, save_dir, max_workers, batch_size, label):
+        """处理港股批量下载"""
+        success_stocks = []
+        up_to_date_stocks = []
+        empty_stocks = []
+        failed_stocks = []
+        batch_data_to_save = []
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            for batch_start in range(0, len(stock_list), batch_size):
+                batch_end = min(batch_start + batch_size, len(stock_list))
+                batch_stocks = stock_list[batch_start:batch_end]
+                
+                print(f"\n[{label}] 提交批次 {batch_start//batch_size + 1}: 股票 {batch_start+1}-{batch_end}")
+                
+                futures = {executor.submit(self._fetch_hk_daily_worker_generic, ts_code, start_date, end_date, stock_info, adj, save_dir): ts_code for ts_code in batch_stocks}
+                
+                for future in as_completed(futures):
+                    try:
+                        result = future.result()
+                        ts_code = result['ts_code']
+                        status = result['status']
+
+                        if status == 'success':
+                            batch_data_to_save.append(result['data'])
+                            success_stocks.append(ts_code)
+                        elif status == 'up_to_date':
+                            up_to_date_stocks.append(ts_code)
+                        elif status == 'api_empty':
+                            empty_stocks.append(ts_code)
+                        elif status == 'error':
+                            failed_stocks.append((ts_code, result['message']))
+                    except Exception as e:
+                        failed_stocks.append((futures[future], str(e)))
+
+                if batch_data_to_save:
+                    print(f"  批量保存 {len(batch_data_to_save)} 只港股的数据...")
+                    for df, file_path in batch_data_to_save:
+                        try:
+                            if file_path.exists():
+                                existing_df = pd.read_parquet(file_path, engine='pyarrow')
+                                combined_df = pd.concat([existing_df, df], ignore_index=True)
+                                combined_df = combined_df.drop_duplicates(subset=['ts_code', 'trade_date']).sort_values('trade_date')
+                                combined_df.to_parquet(file_path, engine='pyarrow', index=False)
+                            else:
+                                df.to_parquet(file_path, engine='pyarrow', index=False)
+                        except Exception as e:
+                            print(f"    保存 {file_path.name} 数据失败: {e}")
+                            failed_stocks.append((file_path.stem, str(e)))
+                    batch_data_to_save.clear()
+
+        self._generate_download_report(
+            data_type='港股日K线(后复权)',
+            total_count=len(stock_list),
+            success_count=len(success_stocks),
+            up_to_date_count=len(up_to_date_stocks),
+            empty_stocks=empty_stocks,
+            failed_stocks=failed_stocks
+        )
+    def _fetch_hk_daily_worker_generic(self, ts_code: str, start_date: str, end_date: str, stock_info: Dict[str, Any], adj: str, save_dir: Path) -> Dict[str, Any]:
+        """通用的港股日线下载Worker (Akshare)"""
+        try:
+            file_path = save_dir / f"{ts_code}.parquet"
+            
+            start_date_actual = start_date
+            if start_date is None or start_date == '':
+                local_latest_date = self._get_latest_date(file_path, 'trade_date')
+                if local_latest_date:
+                    if local_latest_date >= end_date:
+                        return {'ts_code': ts_code, 'status': 'up_to_date'}
+                    latest_dt = datetime.strptime(local_latest_date, '%Y%m%d')
+                    start_date_actual = (latest_dt + timedelta(days=1)).strftime('%Y%m%d')
+                else:
+                    list_date = stock_info.get(ts_code)
+                    start_date_actual = list_date if list_date and list_date != 'None' else '20100101'
+
+            # Akshare 代码转换: 00700.HK -> 00700
+            symbol = ts_code.split('.')[0]
+            
+            # Akshare 获取数据 (一次性获取所有历史数据)
+            # adjust: "qfq", "hfq", ""
+            ak_adj = adj if adj in ['hfq', 'qfq'] else ""
+            
+            try:
+                df = ak.stock_hk_daily(symbol=symbol, adjust=ak_adj)
+            except Exception as e:
+                # Akshare 可能会抛出异常如果股票代码不对或无数据
+                return {'ts_code': ts_code, 'status': 'error', 'message': f"Akshare error: {str(e)}"}
+
+            if df is not None and not df.empty:
+                # 标准化列名
+                # Akshare columns: date, open, high, low, close, volume
+                df = df.rename(columns={
+                    'date': 'trade_date',
+                    'volume': 'vol'
+                })
+                
+                # 格式化日期 YYYY-MM-DD -> YYYYMMDD
+                df['trade_date'] = pd.to_datetime(df['trade_date']).dt.strftime('%Y%m%d')
+                
+                # 筛选日期范围
+                df = df[(df['trade_date'] >= start_date_actual) & (df['trade_date'] <= end_date)]
+                
+                if df.empty:
+                     return {'ts_code': ts_code, 'status': 'api_empty'}
+
+                # 添加 ts_code
+                df['ts_code'] = ts_code
+                
+                # 补充缺失列 (amount, pct_chg)
+                if 'amount' not in df.columns:
+                    df['amount'] = df['close'] * df['vol'] # 估算成交额
+                
+                if 'pct_chg' not in df.columns:
+                    df['pct_chg'] = df['close'].pct_change() * 100
+                    df['pct_chg'] = df['pct_chg'].fillna(0)
+
+                # 确保列顺序和类型
+                cols = ['ts_code', 'trade_date', 'open', 'high', 'low', 'close', 'pre_close', 'change', 'pct_chg', 'vol', 'amount']
+                # 补齐其他可能缺失的列
+                for col in cols:
+                    if col not in df.columns:
+                        df[col] = 0.0 # 或者 np.nan
+                
+                # 简单计算 change 和 pre_close 如果缺失
+                if 'pre_close' not in df.columns or (df['pre_close'] == 0).all():
+                     df['pre_close'] = df['close'].shift(1)
+                     df['pre_close'] = df['pre_close'].fillna(df['open']) # 第一天用开盘价代替
+                
+                if 'change' not in df.columns or (df['change'] == 0).all():
+                    df['change'] = df['close'] - df['pre_close']
+
+                return {'ts_code': ts_code, 'status': 'success', 'data': (df, file_path)}
+            else:
+                return {'ts_code': ts_code, 'status': 'api_empty'}
+        except Exception as e:
+            return {'ts_code': ts_code, 'status': 'error', 'message': str(e)}
     
     def _batch_convert_to_qfq(self, stock_list: List[str], max_workers: int = 4, real_prices_map: Optional[Dict[str, float]] = None):
         """
@@ -1660,6 +1952,89 @@ class QuantDataManager:
             import traceback
             traceback.print_exc()
     
+    def update_global_indices(self, start_date: Optional[str] = None, end_date: Optional[str] = None):
+        """
+        更新全球重要指数日K线数据
+        支持: HSI(恒生指数), HSTECH(恒生科技), SPX(标普500), IXIC(纳斯达克)
+        """
+        print("=" * 60)
+        print("开始更新全球重要指数日K线数据")
+        print("=" * 60)
+        
+        # 确保目录存在
+        global_index_dir = self.paths['index_global_daily']
+        global_index_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 🎯 直接获取Tushare实际最新数据日期
+        if end_date is None:
+            print("查询 Tushare 实际最新数据日期...")
+            end_date = self._get_tushare_latest_date()
+            print(f"✅ Tushare 实际最新数据日期: {end_date}")
+            
+        # 定义要获取的指数列表
+        # 注意：Tushare全球指数代码可能不同，这里使用标准代码，下载时映射
+        # HSI: 恒生指数, HSTECH: 恒生科技, SPX: 标普500, IXIC: 纳斯达克
+        indices = {
+            'HSI': 'HSI',       # 恒生指数
+            'HSTECH': 'HSTECH', # 恒生科技
+            'SPX': 'SPX',       # 标普500
+            'IXIC': 'IXIC'      # 纳斯达克
+        }
+        
+        for name, ts_code in indices.items():
+            file_path = global_index_dir / f"{name}.parquet"
+            
+            try:
+                # 确定开始日期
+                start_date_actual = start_date
+                if start_date is None:
+                    local_latest_date = self._get_latest_date(file_path, 'trade_date')
+                    if local_latest_date:
+                        # 检查数据是否已经是最新
+                        if local_latest_date >= end_date:
+                            print(f"  {name}: 数据已是最新")
+                            continue
+                        
+                        latest_dt = datetime.strptime(local_latest_date, '%Y%m%d')
+                        start_date_actual = (latest_dt + timedelta(days=1)).strftime('%Y%m%d')
+                    else:
+                        start_date_actual = '20100101'
+                
+                print(f"获取 {name} ({ts_code}) 数据...")
+                
+                # 使用 index_global 接口获取全球指数
+                df = self._safe_api_call(self.pro.index_global, 
+                                       ts_code=ts_code,
+                                       start_date=start_date_actual,
+                                       end_date=end_date)
+                
+                if df is not None and not df.empty:
+                    # 确保有ts_code列
+                    if 'ts_code' not in df.columns:
+                        df['ts_code'] = ts_code
+                        
+                    if file_path.exists():
+                        existing_df = pd.read_parquet(file_path, engine='pyarrow')
+                        combined_df = pd.concat([existing_df, df], ignore_index=True)
+                        combined_df = combined_df.drop_duplicates(subset=['trade_date']).sort_values('trade_date')
+                        combined_df.to_parquet(file_path, engine='pyarrow', index=False)
+                        new_latest_date = combined_df['trade_date'].max()
+                        print(f"  {name}: 成功更新 {len(df)} 条记录，最新日期: {new_latest_date}")
+                    else:
+                        df = df.sort_values('trade_date')
+                        df.to_parquet(file_path, engine='pyarrow', index=False)
+                        latest_date = df['trade_date'].max()
+                        print(f"  {name}: 成功创建文件，保存 {len(df)} 条记录，最新日期: {latest_date}")
+                else:
+                    print(f"  {name}: 无新数据")
+                
+                # API限制控制
+                time.sleep(0.5)
+                
+            except Exception as e:
+                print(f"  {name}: 更新失败 - {e}")
+                continue
+    
     def update_index_daily(self, index_codes: Optional[List[str]] = None, 
                           start_date: Optional[str] = None, end_date: Optional[str] = None):
         """
@@ -1876,21 +2251,11 @@ class QuantDataManager:
         # 确保目录存在
         self.paths['stock_moneyflow'].mkdir(parents=True, exist_ok=True)
         
-        # ✅ 优化：先获取 Tushare 最新交易日（避免周末/节假日无效请求）
+        # 🎯 直接获取Tushare实际最新数据日期
         if end_date is None:
-            print("获取 Tushare 最新交易日...")
-            cal_df = self._safe_api_call(self.pro.trade_cal,
-                                        exchange='SSE',
-                                        is_open='1',
-                                        start_date=(datetime.now() - timedelta(days=10)).strftime('%Y%m%d'),
-                                        end_date=datetime.now().strftime('%Y%m%d'))
-            
-            if cal_df is None or cal_df.empty:
-                print("⚠️  无法获取交易日历，使用当前日期")
-                end_date = datetime.now().strftime('%Y%m%d')
-            else:
-                end_date = cal_df['cal_date'].max()
-                print(f"✅ Tushare 数据最新到: {end_date}")
+            print("查询 Tushare 实际最新数据日期...")
+            end_date = self._get_tushare_latest_date()
+            print(f"✅ Tushare 实际最新数据日期: {end_date}")
         
         # 获取股票列表
         if stock_list is None:
@@ -1915,6 +2280,39 @@ class QuantDataManager:
         assert stock_list is not None
         assert end_date is not None  # end_date在前面已经确保有值
         print(f"共需更新 {len(stock_list)} 只股票")
+        
+        # 🚀 优化：全局预检查 - 采样检查是否需要更新
+        print(f"\n检查本地数据状态（采样检查前100只股票）...")
+        print(f"目标更新日期: {end_date}")
+        moneyflow_dir = self.paths['stock_moneyflow']
+        sample_size = min(100, len(stock_list))
+        sample_stocks = stock_list[:sample_size]
+        
+        up_to_date_count_sample = 0
+        for ts_code in sample_stocks:
+            file_path = moneyflow_dir / f"{ts_code}.parquet"
+            if file_path.exists():
+                local_latest_date = self._get_latest_date(file_path, 'trade_date')
+                if local_latest_date and local_latest_date >= end_date:
+                    up_to_date_count_sample += 1
+        
+        # 如果采样中超过95%的股票都是最新的，说明整体数据已经是最新
+        if up_to_date_count_sample >= sample_size * 0.95:
+            print(f"✅ 采样检查: {up_to_date_count_sample}/{sample_size} 只股票数据已是最新")
+            print(f"✅ 数据已经更新到 {end_date}，无需重复下载")
+            
+            # 生成报告（所有股票都是up_to_date）
+            self._generate_download_report(
+                data_type='股票资金流向',
+                total_count=len(stock_list),
+                success_count=0,
+                up_to_date_count=len(stock_list),
+                empty_stocks=[],
+                failed_stocks=[]
+            )
+            return
+        else:
+            print(f"📊 采样检查: {up_to_date_count_sample}/{sample_size} 只股票已是最新，继续检查其他股票...")
         
         up_to_date_stocks = []
         success_stocks = []
@@ -2568,6 +2966,12 @@ class QuantDataManager:
         except Exception as e:
             print(f"❌ 更新指数日K线失败: {e}")
             failed_steps.append("指数日K线")
+            
+        try:
+            self.update_global_indices(start_date, end_date)  # 🆕 全球指数
+        except Exception as e:
+            print(f"❌ 更新全球重要指数失败: {e}")
+            failed_steps.append("全球重要指数")
         
         try:
             self.update_index_constituents()
@@ -2581,6 +2985,12 @@ class QuantDataManager:
         except Exception as e:
             print(f"❌ 更新股票日K线数据失败: {e}")
             failed_steps.append("股票日K线数据")
+            
+        # try:
+        #     self.update_hk_stock_daily_hfq(start_date, end_date)  # 🆕 港股通数据 (已移除，需单独更新)
+        # except Exception as e:
+        #     print(f"❌ 更新港股通日K线数据失败: {e}")
+        #     failed_steps.append("港股通日K线数据")
         
         try:
             self.update_stock_moneyflow(start_date, end_date)  # 🆕 资金流向数据
@@ -2602,11 +3012,11 @@ class QuantDataManager:
             print(f"❌ 更新融资融券交易汇总失败: {e}")
             failed_steps.append("融资融券交易汇总")
         
-        try:
-            self.update_moneyflow_hsgt(start_date, end_date)
-        except Exception as e:
-            print(f"❌ 更新沪深港通资金流向失败: {e}")
-            failed_steps.append("沪深港通资金流向")
+        # try:
+        #     self.update_moneyflow_hsgt(start_date, end_date)
+        # except Exception as e:
+        #     print(f"❌ 更新沪深港通资金流向失败: {e}")
+        #     failed_steps.append("沪深港通资金流向")
         
         # 注意：财务指标数据请使用专门的程序单独更新（每季度一次）
         # 注意：个股融资融券明细数据量大，建议单独运行 update_stock_margin_detail()
@@ -2672,19 +3082,18 @@ def main():
         print("3. 更新股票资金流向数据")
         print("4. 更新指数成分股数据")
         print("5. 更新无风险利率")
-        print("6. 更新申万行业分类")
-        print("7. 更新申万行业成分股（最新数据）")
-        print("8. 更新申万L2个股历史映射")
-        print("9. 更新指数日K线")
-        print("10. 更新股票基础信息")
-        print("11. 更新股票每日基础指标")
-        print("12. 更新/计算因子策略")
-        print("13. 更新融资融券交易汇总")
-        print("14. 更新个股融资融券明细")
-        print("15. 更新沪深港通资金流向")
+        print("6. 更新申万行业数据（分类+成分股+历史映射）")
+        print("7. 更新指数日K线（含全球重要指数）")
+        print("8. 更新股票基础信息")
+        print("9. 更新股票每日基础指标")
+        print("10. 更新/计算因子策略")
+        print("11. 更新融资融券交易汇总")
+        print("12. 更新个股融资融券明细")
+        print("13. 更新港股通个股日K线 (🆕)")
         # 注意：财务指标数据请使用专门的程序单独更新（每季度一次）
         
-        choice = input("请输入选择 (1-15): ").strip()
+        choice = input("请输入选择 (1-13): ").strip()
+        
         
         if choice == '1':
             manager.update_all()
@@ -2697,18 +3106,25 @@ def main():
         elif choice == '5':
             manager.update_risk_free_rate()
         elif choice == '6':
+            # 合并的申万行业数据更新
+            print("\n" + "="*60)
+            print("更新申万行业数据（包含分类、成分股、历史映射）")
+            print("="*60)
             manager.update_sw_industry_daily()
-        elif choice == '7':
             manager.update_sw_industry_member_latest()
-        elif choice == '8':
             manager.update_sw_l2_member_history()
-        elif choice == '9':
+        elif choice == '7':
+            # 合并的指数日K线更新（含全球指数）
+            print("\n" + "="*60)
+            print("更新指数日K线（包含A股指数和全球重要指数）")
+            print("="*60)
             manager.update_index_daily()
-        elif choice == '10':
+            manager.update_global_indices()
+        elif choice == '8':
             manager.update_stock_basic()
-        elif choice == '11':
+        elif choice == '9':
             manager.update_daily_basic()
-        elif choice == '12':
+        elif choice == '10':
             print("\n" + "=" * 80)
             print("因子策略计算")
             print("=" * 80)
@@ -2723,12 +3139,12 @@ def main():
             print("  - python build_custom_factors.py")
             print("  - python build_ch3_factors.py")
             print("=" * 80)
-        elif choice == '13':
+        elif choice == '11':
             manager.update_margin_total()
-        elif choice == '14':
-            manager.update_stock_margin_detail()
-        elif choice == '15':
-            manager.update_moneyflow_hsgt()
+        elif choice == '12':
+            manager.update_detail_margin()
+        elif choice == '13':
+            manager.update_hk_stock_daily_hfq()
         else:
             print("无效选择")
             return 1
