@@ -2918,6 +2918,324 @@ class QuantDataManager:
                 for ts_code, message in failed_stocks:
                     f.write(f"{ts_code}: {message}\n")
 
+    def update_missing_data_for_strategy(self, start_date: Optional[str] = None, end_date: Optional[str] = None,
+                                        include_index_valuation: bool = True,
+                                        include_bond_yield: bool = True,
+                                        include_options_pcr: bool = False,
+                                        include_futures_holding: bool = False):
+        """
+        补齐四维择时策略所需的：指数估值、国债收益率、期货持仓、期权PCR
+        
+        Args:
+            start_date: 开始日期 (YYYYMMDD)，默认为None（自动从本地最新日期开始）
+            end_date: 结束日期 (YYYYMMDD)，默认为None（使用当前日期）
+            include_index_valuation: 是否更新指数估值数据，默认True
+            include_bond_yield: 是否更新国债收益率数据，默认True
+            include_options_pcr: 是否更新期权PCR数据，默认False（可在其他项目获取）
+            include_futures_holding: 是否更新期货持仓数据，默认False（可在其他项目获取）
+        """
+        print("=" * 80)
+        print("开始补齐四维择时策略所需数据")
+        print("=" * 80)
+        
+        # 确定结束日期
+        if end_date is None:
+            end_date = datetime.now().strftime('%Y%m%d')
+        
+        failed_steps = []
+        
+        # ========== 1. 更新指数每日估值 (PE/PB) ==========
+        if include_index_valuation:
+            print("\n" + "=" * 60)
+            print("步骤1: 更新指数每日估值数据 (PE/PB)")
+            print("=" * 60)
+            try:
+                index_codes = ['000001.SH', '000300.SH', '000905.SH', '399006.SZ', '000852.SH']
+                save_dir = self.data_center_path / 'index' / 'daily_basic'
+                save_dir.mkdir(parents=True, exist_ok=True)
+                
+                for code in index_codes:
+                    file_path = save_dir / f'{code}.parquet'
+                    
+                    # 确定开始日期
+                    latest_date = None
+                    if start_date is None:
+                        latest_date = self._get_latest_date(file_path, 'trade_date')
+                        if latest_date:
+                            latest_dt = datetime.strptime(latest_date, '%Y%m%d')
+                            start_date_actual = (latest_dt + timedelta(days=1)).strftime('%Y%m%d')
+                        else:
+                            start_date_actual = '20100101'
+                    else:
+                        start_date_actual = start_date
+                    
+                    # 检查是否需要更新
+                    if latest_date and latest_date >= end_date:
+                        print(f"  {code}: 数据已是最新 (截止 {latest_date})")
+                        continue
+                    
+                    # 下载数据
+                    print(f"  {code}: 下载 {start_date_actual} 至 {end_date} 的估值数据...")
+                    df = self._safe_api_call(
+                        self.pro.index_dailybasic,
+                        ts_code=code,
+                        start_date=start_date_actual,
+                        end_date=end_date
+                    )
+                    
+                    if df is not None and not df.empty:
+                        # 合并数据
+                        if file_path.exists():
+                            existing_df = pd.read_parquet(file_path, engine='pyarrow')
+                            combined_df = pd.concat([existing_df, df], ignore_index=True)
+                            combined_df = combined_df.drop_duplicates(subset=['ts_code', 'trade_date']).sort_values('trade_date')
+                            combined_df.to_parquet(file_path, engine='pyarrow', index=False)
+                        else:
+                            df.to_parquet(file_path, engine='pyarrow', index=False)
+                        
+                        print(f"  {code}: ✅ 成功更新 {len(df)} 条记录")
+                    else:
+                        print(f"  {code}: ⚠️  无新数据")
+                    
+                    time.sleep(0.2)  # API限流
+            except Exception as e:
+                print(f"❌ 更新指数估值数据失败: {e}")
+                failed_steps.append("指数估值数据")
+        
+        # ========== 2. 更新10年期国债收益率 ==========
+        if include_bond_yield:
+            print("\n" + "=" * 60)
+            print("步骤2: 更新10年期国债收益率")
+            print("=" * 60)
+            try:
+                macro_dir = self.data_center_path / 'factors' / 'macro'
+                macro_dir.mkdir(parents=True, exist_ok=True)
+                file_path = macro_dir / 'china_bond_yield_10y.parquet'
+                
+                # 确定开始日期
+                latest_date = None
+                if start_date is None:
+                    latest_date = self._get_latest_date(file_path, 'trade_date')
+                    if latest_date:
+                        latest_dt = datetime.strptime(latest_date, '%Y%m%d')
+                        start_date_actual = (latest_dt + timedelta(days=1)).strftime('%Y%m%d')
+                    else:
+                        start_date_actual = '20100101'
+                else:
+                    start_date_actual = start_date
+                
+                # 检查是否需要更新
+                if latest_date and latest_date >= end_date:
+                    print(f"  数据已是最新 (截止 {latest_date})")
+                else:
+                    print(f"  下载 {start_date_actual} 至 {end_date} 的国债收益率数据...")
+                    # Tushare API: yield_curve, curve_type='0' (国债), period='10.0' (10年期)
+                    df = self._safe_api_call(
+                        self.pro.yc_cb,
+                        curve_type='0',
+                        start_date=start_date_actual,
+                        end_date=end_date
+                    )
+                    
+                    if df is not None and not df.empty:
+                        # 筛选10年期数据
+                        df = df[df['curve_term'] == 10.0].copy()
+                        
+                        if not df.empty:
+                            # 合并数据
+                            if file_path.exists():
+                                existing_df = pd.read_parquet(file_path, engine='pyarrow')
+                                combined_df = pd.concat([existing_df, df], ignore_index=True)
+                                combined_df = combined_df.drop_duplicates(subset=['trade_date']).sort_values('trade_date')
+                                combined_df.to_parquet(file_path, engine='pyarrow', index=False)
+                            else:
+                                df.to_parquet(file_path, engine='pyarrow', index=False)
+                            
+                            print(f"  ✅ 成功更新 {len(df)} 条记录")
+                        else:
+                            print(f"  ⚠️  无10年期数据")
+                    else:
+                        print(f"  ⚠️  无新数据")
+            except Exception as e:
+                print(f"❌ 更新国债收益率数据失败: {e}")
+                failed_steps.append("国债收益率数据")
+        
+        # ========== 3. 更新期权PCR (聚合数据) ==========
+        if include_options_pcr:
+            print("\n" + "=" * 60)
+            print("步骤3: 更新期权PCR数据")
+            print("=" * 60)
+            try:
+                opt_dir = self.data_center_path / 'market' / 'derivatives' / 'options'
+                opt_dir.mkdir(parents=True, exist_ok=True)
+                pcr_file = opt_dir / 'pcr_daily.parquet'
+                
+                # 确定开始日期
+                latest_date = None
+                if start_date is None:
+                    latest_date = self._get_latest_date(pcr_file, 'trade_date')
+                    if latest_date:
+                        latest_dt = datetime.strptime(latest_date, '%Y%m%d')
+                        start_date_actual = (latest_dt + timedelta(days=1)).strftime('%Y%m%d')
+                    else:
+                        start_date_actual = '20150101'  # 期权数据从2015年开始
+                else:
+                    start_date_actual = start_date
+                
+                # 检查是否需要更新
+                if latest_date and latest_date >= end_date:
+                    print(f"  数据已是最新 (截止 {latest_date})")
+                else:
+                    print(f"  下载 {start_date_actual} 至 {end_date} 的期权数据并计算PCR...")
+                    print(f"  注意：此步骤可能需要较长时间...")
+                    
+                    # 生成日期列表
+                    start_dt = datetime.strptime(start_date_actual, '%Y%m%d')
+                    end_dt = datetime.strptime(end_date, '%Y%m%d')
+                    date_list = []
+                    current_dt = start_dt
+                    while current_dt <= end_dt:
+                        date_list.append(current_dt.strftime('%Y%m%d'))
+                        current_dt += timedelta(days=1)
+                    
+                    # 按日下载并计算PCR
+                    pcr_records = []
+                    for trade_date in date_list:
+                        try:
+                            # 下载当日所有期权数据（SSE和SZSE）
+                            df_sse = self._safe_api_call(
+                                self.pro.opt_daily,
+                                exchange='SSE',
+                                trade_date=trade_date
+                            )
+                            
+                            df_szse = self._safe_api_call(
+                                self.pro.opt_daily,
+                                exchange='SZSE',
+                                trade_date=trade_date
+                            )
+                            
+                            # 合并数据
+                            df_list = []
+                            if df_sse is not None and not df_sse.empty:
+                                df_list.append(df_sse)
+                            if df_szse is not None and not df_szse.empty:
+                                df_list.append(df_szse)
+                            
+                            if df_list:
+                                df_opt = pd.concat(df_list, ignore_index=True)
+                                
+                                # 计算PCR (Put-Call Ratio)
+                                # PCR = Put成交量 / Call成交量
+                                put_vol = df_opt[df_opt['call_put'] == 'P']['vol'].sum()
+                                call_vol = df_opt[df_opt['call_put'] == 'C']['vol'].sum()
+                                
+                                if call_vol > 0:
+                                    pcr = put_vol / call_vol
+                                    pcr_records.append({
+                                        'trade_date': trade_date,
+                                        'put_volume': put_vol,
+                                        'call_volume': call_vol,
+                                        'pcr': pcr
+                                    })
+                            
+                            # 限流
+                            time.sleep(0.5)
+                        except Exception as e:
+                            print(f"  ⚠️  {trade_date} 下载失败: {e}")
+                            continue
+                    
+                    if pcr_records:
+                        df_pcr = pd.DataFrame(pcr_records)
+                        
+                        # 合并数据
+                        if pcr_file.exists():
+                            existing_df = pd.read_parquet(pcr_file, engine='pyarrow')
+                            combined_df = pd.concat([existing_df, df_pcr], ignore_index=True)
+                            combined_df = combined_df.drop_duplicates(subset=['trade_date']).sort_values('trade_date')
+                            combined_df.to_parquet(pcr_file, engine='pyarrow', index=False)
+                        else:
+                            df_pcr.to_parquet(pcr_file, engine='pyarrow', index=False)
+                        
+                        print(f"  ✅ 成功更新 {len(pcr_records)} 条PCR记录")
+                    else:
+                        print(f"  ⚠️  无新数据")
+            except Exception as e:
+                print(f"❌ 更新期权PCR数据失败: {e}")
+                failed_steps.append("期权PCR数据")
+        
+        # ========== 4. 更新期货主力持仓 ==========
+        if include_futures_holding:
+            print("\n" + "=" * 60)
+            print("步骤4: 更新期货主力持仓")
+            print("=" * 60)
+            try:
+                fut_dir = self.data_center_path / 'market' / 'derivatives' / 'futures' / 'holding'
+                fut_dir.mkdir(parents=True, exist_ok=True)
+                
+                # 股指期货品种
+                varieties = ['IF', 'IC', 'IM', 'IH']
+                
+                for variety in varieties:
+                    print(f"\n  处理 {variety} 期货持仓数据...")
+                    file_path = fut_dir / f'{variety}_holding.parquet'
+                    
+                    # 确定开始日期
+                    latest_date = None
+                    if start_date is None:
+                        latest_date = self._get_latest_date(file_path, 'trade_date')
+                        if latest_date:
+                            latest_dt = datetime.strptime(latest_date, '%Y%m%d')
+                            start_date_actual = (latest_dt + timedelta(days=1)).strftime('%Y%m%d')
+                        else:
+                            start_date_actual = '20150101'  # 期货数据从2015年开始
+                    else:
+                        start_date_actual = start_date
+                    
+                    # 检查是否需要更新
+                    if latest_date and latest_date >= end_date:
+                        print(f"    {variety}: 数据已是最新 (截止 {latest_date})")
+                        continue
+                    
+                    # 下载持仓数据
+                    print(f"    {variety}: 下载 {start_date_actual} 至 {end_date} 的持仓数据...")
+                    df = self._safe_api_call(
+                        self.pro.fut_holding,
+                        symbol=variety,
+                        start_date=start_date_actual,
+                        end_date=end_date
+                    )
+                    
+                    if df is not None and not df.empty:
+                        # 合并数据
+                        if file_path.exists():
+                            existing_df = pd.read_parquet(file_path, engine='pyarrow')
+                            combined_df = pd.concat([existing_df, df], ignore_index=True)
+                            combined_df = combined_df.drop_duplicates(subset=['trade_date', 'symbol', 'broker']).sort_values('trade_date')
+                            combined_df.to_parquet(file_path, engine='pyarrow', index=False)
+                        else:
+                            df.to_parquet(file_path, engine='pyarrow', index=False)
+                        
+                        print(f"    {variety}: ✅ 成功更新 {len(df)} 条记录")
+                    else:
+                        print(f"    {variety}: ⚠️  无新数据")
+                    
+                    time.sleep(0.5)  # API限流
+            except Exception as e:
+                print(f"❌ 更新期货持仓数据失败: {e}")
+                failed_steps.append("期货持仓数据")
+        
+        # ========== 总结 ==========
+        print("\n" + "=" * 80)
+        if failed_steps:
+            print(f"⚠️  四维择时策略数据更新完成，但有 {len(failed_steps)} 个步骤失败:")
+            for step in failed_steps:
+                print(f"   - {step}")
+        else:
+            print("✅ 四维择时策略所需数据全部更新完成！")
+        print("=" * 80)
+
+
     def update_all(self, start_date: Optional[str] = None, end_date: Optional[str] = None, 
                    include_sw_member: bool = False):
         """
@@ -3090,9 +3408,10 @@ def main():
         print("11. 更新融资融券交易汇总")
         print("12. 更新个股融资融券明细")
         print("13. 更新港股通个股日K线 (🆕)")
+        print("14. 更新四维择时策略所需数据（指数估值PE/PB + 国债收益率）")
         # 注意：财务指标数据请使用专门的程序单独更新（每季度一次）
         
-        choice = input("请输入选择 (1-13): ").strip()
+        choice = input("请输入选择 (1-14): ").strip()
         
         
         if choice == '1':
@@ -3145,6 +3464,17 @@ def main():
             manager.update_detail_margin()
         elif choice == '13':
             manager.update_hk_stock_daily_hfq()
+        elif choice == '14':
+            # 更新四维择时策略所需数据
+            print("\n" + "="*60)
+            print("更新四维择时策略所需数据")
+            print("="*60)
+            manager.update_missing_data_for_strategy(
+                include_index_valuation=True,
+                include_bond_yield=True,
+                include_options_pcr=False,
+                include_futures_holding=False
+            )
         else:
             print("无效选择")
             return 1

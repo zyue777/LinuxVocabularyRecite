@@ -29,6 +29,7 @@
 ├── 📄 核心脚本
 │   ├── download_data_manager.py     # 数据下载管理器（主程序）
 │   ├── download_financial_slow.py   # 财务数据下载（慢速稳定版）
+│   ├── update_bond_yield.py         # 国债收益率增量更新脚本 🆕
 │   ├── build_ff5_factors_monthly_ttm.py  # FF5因子构建脚本 (v2.0)
 │   ├── check_data_completeness.py   # 数据完整性检查工具 (v2.0)
 │   ├── config.py                    # 全局配置文件
@@ -66,10 +67,13 @@
     ├── factors/
     │   ├── fama_french_5/          # FF5因子 (v2.0优化版) ⭐
     │   │   └── ff_5_factors_daily.parquet
+    │   ├── macro/                  # 宏观因子 (国债收益率) 🆕
+    │   │   └── china_bond_yield_10y.parquet
     │   └── risk_free/              # 无风险利率 (SHIBOR)
     │       └── rfr_daily.parquet
     ├── index/
     │   ├── daily/                  # 指数日K线 (沪深300/中证500/创业板)
+    │   ├── daily_basic/            # 指数每日估值 (PE/PB) 🆕
     │   └── constituents/           # 指数成分股历史数据
     └── classification/
         └── industry_sw/            # 申万行业分类
@@ -249,7 +253,57 @@ manager.update_stock_moneyflow()  # 增量更新
 
 ---
 
-### 5️⃣ 市场元数据与工具函数 🆕
+### 5️⃣ 国债收益率数据 🆕
+
+**绝对路径**: `quant_data_center/factors/macro/china_bond_yield_10y.parquet`  
+**用途**: 10年期国债收益率，作为无风险利率参考或宏观择时因子
+
+**数据特点**:
+- ✅ **完整历史数据**: 3,972条记录，从2010-01-04至今
+- ✅ **每日更新**: 覆盖所有交易日
+- ✅ **数据源**: AkShare (中美国债收益率对比数据)
+- ✅ **自动备份**: Parquet和CSV双格式备份
+
+**关键字段**:
+- `trade_date`: 交易日期 (YYYYMMDD格式)
+- `yield`: 10年期国债收益率 (%)
+- `curve_term`: 期限 (10.0年)
+
+**使用示例**:
+```python
+import pandas as pd
+
+# 读取国债收益率数据
+df_bond = pd.read_parquet('quant_data_center/factors/macro/china_bond_yield_10y.parquet')
+
+# 计算收益率分位数（用于择时）
+current_yield = df_bond['yield'].iloc[-1]
+percentile = (df_bond['yield'] < current_yield).mean()
+print(f"当前收益率: {current_yield:.2f}%, 历史分位数: {percentile:.1%}")
+
+# 绘制收益率走势
+import matplotlib.pyplot as plt
+df_bond['trade_date'] = pd.to_datetime(df_bond['trade_date'])
+df_bond.set_index('trade_date')['yield'].plot(title='10年期国债收益率走势')
+```
+
+**更新数据**:
+```bash
+# 增量更新（推荐）
+python update_bond_yield.py
+
+# 或通过数据管理器
+python download_data_manager.py
+# 选择: 14
+```
+
+**备份文件**:
+- Parquet格式: `/home/zy/桌面/数据中心/backup_china_bond_yield_10y.parquet`
+- CSV格式: `/home/zy/桌面/数据中心/backup_china_bond_yield_10y.csv`
+
+---
+
+### 6️⃣ 市场元数据与工具函数 🆕
 
 **市场元数据**:
 - `market_metadata/chinext_stocks.parquet`: 创业板股票标记
@@ -275,7 +329,7 @@ df_qfq = convert_hfq_to_qfq('000001.SZ')
 
 ---
 
-### 6️⃣ 数据完整性检查 (v2.0优化 + 新增功能)
+### 7️⃣ 数据完整性检查 (v2.0优化 + 新增功能)
 
 ```bash
 python check_data_completeness.py

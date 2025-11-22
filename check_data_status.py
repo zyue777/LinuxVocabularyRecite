@@ -676,6 +676,100 @@ class DataStatusChecker:
         
         return status
     
+    def check_index_valuation(self) -> Dict[str, Any]:
+        """检查指数每日估值数据 (PE/PB)"""
+        dir_path = self.data_center_path / "index" / "daily_basic"
+        
+        status = {
+            'name': '指数每日估值(PE/PB)',
+            'path': str(dir_path),
+            'exists': dir_path.exists(),
+            'latest_date': None,
+            'file_count': 0,
+            'indices': []
+        }
+        
+        if dir_path.exists():
+            files = list(dir_path.glob("*.parquet"))
+            status['file_count'] = len(files)
+            
+            if files:
+                latest_dates = []
+                for file_path in files:
+                    try:
+                        latest_date = self._get_latest_date(file_path, 'trade_date')
+                        if latest_date:
+                            latest_dates.append(latest_date)
+                            index_code = file_path.stem
+                            
+                            # 读取数据获取记录数和字段信息
+                            df = pd.read_parquet(file_path, engine='pyarrow')
+                            record_count = len(df)
+                            
+                            # 检查关键字段
+                            has_pe = 'pe' in df.columns or 'pe_ttm' in df.columns
+                            has_pb = 'pb' in df.columns
+                            
+                            status['indices'].append({
+                                'code': index_code,
+                                'latest_date': latest_date,
+                                'record_count': record_count,
+                                'has_pe': has_pe,
+                                'has_pb': has_pb
+                            })
+                    except:
+                        continue
+                
+                if latest_dates:
+                    status['latest_date'] = max(latest_dates)
+        
+        return status
+    
+    def check_bond_yield(self) -> Dict[str, Any]:
+        """检查国债收益率数据"""
+        file_path = self.data_center_path / "factors" / "macro" / "china_bond_yield_10y.parquet"
+        
+        status = {
+            'name': '国债收益率(10年期)',
+            'path': str(file_path),
+            'exists': file_path.exists(),
+            'latest_date': None,
+            'count': 0,
+            'date_range': None,
+            'data_source': None,
+            'has_backup': False
+        }
+        
+        if file_path.exists():
+            try:
+                latest_date = self._get_latest_date(file_path, 'trade_date')
+                status['latest_date'] = latest_date
+                
+                df = pd.read_parquet(file_path, engine='pyarrow')
+                status['count'] = len(df)
+                
+                if not df.empty:
+                    status['date_range'] = {
+                        'start': df['trade_date'].min(),
+                        'end': df['trade_date'].max()
+                    }
+                    
+                    # 检查数据源
+                    if 'curve_name' in df.columns:
+                        unique_sources = df['curve_name'].unique()
+                        if len(unique_sources) > 0:
+                            status['data_source'] = unique_sources[0]
+                
+                # 检查备份文件是否存在
+                backup_parquet = self.data_center_path.parent / "backup_china_bond_yield_10y.parquet"
+                backup_csv = self.data_center_path.parent / "backup_china_bond_yield_10y.csv"
+                status['has_backup'] = backup_parquet.exists() or backup_csv.exists()
+                
+            except Exception as e:
+                status['error'] = str(e)
+        
+        return status
+    
     def check_global_indices(self) -> Dict[str, Any]:
         """检查全球重要指数日K线"""
         dir_path = self.data_center_path / "index" / "global_daily"
@@ -770,6 +864,7 @@ class DataStatusChecker:
         
         # 指数数据
         all_status.append(self.check_index_daily())
+        all_status.append(self.check_index_valuation())  # 🆕 新增：指数估值
         all_status.append(self.check_global_indices())  # 🆕 新增
         all_status.append(self.check_index_constituents())
         
@@ -778,6 +873,7 @@ class DataStatusChecker:
         
         # 因子数据
         all_status.append(self.check_risk_free_rate())
+        all_status.append(self.check_bond_yield())  # 🆕 新增：国债收益率
         all_status.append(self.check_ff3_factors())
         all_status.append(self.check_ff5_factors())
         all_status.append(self.check_ch3_factors())
@@ -930,6 +1026,44 @@ class DataStatusChecker:
                     else:
                         formatted_end = end_date
                     print(f"   日期范围: {formatted_start} 至 {formatted_end}")
+            
+            # 显示指数估值详情（包含PE/PB字段检查）
+            if name == '指数每日估值(PE/PB)' and 'indices' in status and status['indices']:
+                print(f"   指数详情:")
+                for idx in status['indices']:
+                    idx_date = idx['latest_date']
+                    if len(idx_date) == 8:
+                        formatted_date = f"{idx_date[:4]}-{idx_date[4:6]}-{idx_date[6:8]}"
+                    else:
+                        formatted_date = idx_date
+                    
+                    # 指数名称映射
+                    index_names = {
+                        '000001.SH': '上证指数',
+                        '000300.SH': '沪深300',
+                        '000905.SH': '中证500',
+                        '399006.SZ': '创业板指',
+                        '000852.SH': '中证1000'
+                    }
+                    index_name = index_names.get(idx['code'], idx['code'])
+                    
+                    # 字段状态
+                    fields_status = []
+                    if idx.get('has_pe'):
+                        fields_status.append('PE✓')
+                    if idx.get('has_pb'):
+                        fields_status.append('PB✓')
+                    fields_str = ','.join(fields_status) if fields_status else '无PE/PB'
+                    
+                    print(f"     - {index_name}({idx['code']}): {formatted_date}, {idx['record_count']:,}条, [{fields_str}]")
+            
+            # 显示国债收益率详情
+            if name == '国债收益率(10年期)':
+                if 'data_source' in status and status['data_source']:
+                    print(f"   数据源: {status['data_source']}")
+                if 'has_backup' in status:
+                    backup_status = '✅ 已备份' if status['has_backup'] else '⚠️  无备份'
+                    print(f"   备份状态: {backup_status}")
         
         print("\n" + "="*80)
         print("✅ 数据状态检查完成")
