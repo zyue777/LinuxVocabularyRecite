@@ -3461,7 +3461,7 @@ def main():
         elif choice == '11':
             manager.update_margin_total()
         elif choice == '12':
-            manager.update_detail_margin()
+            manager.update_stock_margin_detail()
         elif choice == '13':
             manager.update_hk_stock_daily_hfq()
         elif choice == '14':
