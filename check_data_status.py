@@ -523,6 +523,96 @@ class DataStatusChecker:
         
         return status
     
+    def check_stock_cyq_perf(self) -> Dict[str, Any]:
+        """检查股票每日筹码分布统计数据"""
+        dir_path = self.data_center_path / "stock" / "cyq_perf"
+        
+        status = {
+            'name': '股票每日筹码分布统计',
+            'path': str(dir_path),
+            'exists': dir_path.exists(),
+            'latest_date': None,
+            'file_count': 0,
+            'total_records': 0,
+            'coverage': None,  # 覆盖率
+            'missing_latest_count': 0,  # 缺失最新日期的文件数
+            'missing_latest_stocks': []  # 缺失最新日期的股票列表
+        }
+        
+        if dir_path.exists():
+            try:
+                files = list(dir_path.glob("*.parquet"))
+                status['file_count'] = len(files)
+                
+                if files:
+                    # 获取所有文件的最新日期
+                    latest_dates = []
+                    files_with_latest = 0
+                    missing_stocks = []
+                    
+                    for file_path in files:
+                        try:
+                            df = pd.read_parquet(file_path, engine='pyarrow', columns=['trade_date'])
+                            if not df.empty:
+                                latest_date = df['trade_date'].max()
+                                latest_dates.append(latest_date)
+                                
+                                # 检查是否达到整体最新日期
+                                if status['latest_date'] is None or latest_date > status['latest_date']:
+                                    status['latest_date'] = latest_date
+                            else:
+                                latest_dates.append(None)
+                        except:
+                            latest_dates.append(None)
+                    
+                    # 第二次遍历：统计达到最新日期的文件数
+                    if status['latest_date'] is not None:
+                        for i, file_path in enumerate(files):
+                            try:
+                                df = pd.read_parquet(file_path, engine='pyarrow', columns=['trade_date'])
+                                if not df.empty:
+                                    has_latest = (df['trade_date'] == status['latest_date']).any()
+                                    if has_latest:
+                                        files_with_latest += 1
+                                    else:
+                                        status['missing_latest_count'] += 1
+                                        status['missing_latest_stocks'].append(file_path.stem)
+                                else:
+                                    status['missing_latest_count'] += 1
+                                    status['missing_latest_stocks'].append(file_path.stem)
+                            except:
+                                status['missing_latest_count'] += 1
+                                status['missing_latest_stocks'].append(file_path.stem)
+                        
+                        # 计算覆盖率
+                        status['coverage'] = files_with_latest / len(files) if files else 0
+                    
+                    # 统计总记录数（采样）
+                    if len(files) <= 100:
+                        total = 0
+                        for f in files:
+                            try:
+                                df = pd.read_parquet(f, engine='pyarrow')
+                                total += len(df)
+                            except:
+                                pass
+                        status['total_records'] = total
+                    else:
+                        sample_files = files[:100]
+                        sample_total = 0
+                        for f in sample_files:
+                            try:
+                                df = pd.read_parquet(f, engine='pyarrow')
+                                sample_total += len(df)
+                            except:
+                                pass
+                        status['total_records'] = int(sample_total * len(files) / 100)
+            except Exception as e:
+                # 如果获取文件列表失败，记录错误但继续
+                status['error'] = str(e)
+        
+        return status
+    
     def check_qfq_conversion(self) -> Dict[str, Any]:
         """检查前复权转换功能"""
         status = {
@@ -918,6 +1008,7 @@ class DataStatusChecker:
         all_status.append(self.check_stock_basic())
         all_status.append(self.check_stock_daily_hfq())
         all_status.append(self.check_stock_moneyflow())  # 🆕 新增
+        all_status.append(self.check_stock_cyq_perf())  # 🆕 新增：筹码分布统计
         all_status.append(self.check_daily_basic())
         all_status.append(self.check_fina_indicator())
         
@@ -1026,6 +1117,13 @@ class DataStatusChecker:
                     print(f"   文件数: {status['file_count']:,} 个")
                     if 'total_records' in status and status['total_records'] > 0:
                         print(f"   总记录数（估算）: {status['total_records']:,} 条")
+                    # 显示覆盖率（资金流向和筹码分布）
+                    if 'coverage' in status and status['coverage'] is not None:
+                        coverage_pct = status['coverage'] * 100
+                        files_with_latest = status.get('file_count', 0) - status.get('missing_latest_count', 0)
+                        print(f"   数据覆盖率: {coverage_pct:.1f}% ({files_with_latest}/{status['file_count']})")
+                        if status.get('missing_latest_count', 0) > 0:
+                            print(f"   缺失最新日期: {status['missing_latest_count']} 个文件")
                 elif exists:  # 如果目录存在但文件数为0，也显示
                     print(f"   文件数: 0 个")
                     if 'total_records' in status:
@@ -1225,6 +1323,7 @@ class DataStatusChecker:
             ('股票基础信息', ['股票基础信息']),
             ('股票日K线(后复权)', ['股票日K线', '后复权']),
             ('股票资金流向', ['股票资金流向']),
+            ('股票每日筹码分布统计', ['股票每日筹码分布统计']),
             ('港股通日K线(后复权)', ['港股通', '后复权']),
             ('指数日K线', ['指数日K线']),
             ('全球重要指数日K线', ['全球重要指数']),
@@ -1353,6 +1452,38 @@ class DataStatusChecker:
             else:
                 print(f"  ⚠️  资金流向数据目录不存在")
             
+            # 检查筹码分布文件数量
+            cyq_perf_dir = self.data_center_path / "stock" / "cyq_perf"
+            if cyq_perf_dir.exists():
+                try:
+                    cyq_perf_files = list(cyq_perf_dir.glob("*.parquet"))
+                    cyq_perf_count = len(cyq_perf_files)
+                    print(f"  筹码分布文件数: {cyq_perf_count} 个")
+                    
+                    if cyq_perf_count == 0:
+                        print(f"  ⚠️  筹码分布数据目录存在但无文件")
+                    elif cyq_perf_count < basic_count * 0.5:
+                        missing_stocks = []
+                        # 找出缺失筹码分布数据的股票
+                        existing_cyq_perf_stocks = {f.stem for f in cyq_perf_files}
+                        missing_stocks = [code for code in df_basic['ts_code'] if code not in existing_cyq_perf_stocks]
+                        
+                        completeness_report['file_count_issues'].append({
+                            'type': 'cyq_perf',
+                            'expected': basic_count,
+                            'actual': cyq_perf_count,
+                            'missing': basic_count - cyq_perf_count,
+                            'missing_stocks': missing_stocks[:50]  # 只保存前50个，避免日志过大
+                        })
+                        print(f"  ⚠️  警告: 筹码分布文件缺失 {basic_count - cyq_perf_count} 个")
+                        if missing_stocks:
+                            print(f"    缺失示例（前10个）: {missing_stocks[:10]}")
+                    else:
+                        print(f"  ✅ 筹码分布文件数量正常 ({cyq_perf_count}/{basic_count})")
+                except Exception as e:
+                    print(f"  ❌ 检查筹码分布文件时出错: {e}")
+            else:
+                print(f"  ⚠️  筹码分布数据目录不存在")
         
         # 2. 检查交易日数据断层（采样检查，使用A股交易日历）
         print("\n【2. 交易日数据断层检查（采样，基于A股交易日历）】")
@@ -1490,6 +1621,7 @@ class DataStatusChecker:
         dedup_report = {
             'daily_hfq_duplicates': [],
             'moneyflow_duplicates': [],
+            'cyq_perf_duplicates': [],
             'daily_basic_duplicates': None,
             'fixed_count': 0
         }
@@ -1569,6 +1701,44 @@ class DataStatusChecker:
                         continue
                 
                 if not dedup_report['moneyflow_duplicates']:
+                    print(f"  ✅ 采样检查未发现重复数据")
+        
+        # 2.5 检查筹码分布数据重复
+        print("\n【2.5. 筹码分布数据去重检查】")
+        cyq_perf_dir = self.data_center_path / "stock" / "cyq_perf"
+        if cyq_perf_dir.exists():
+            cyq_perf_files = list(cyq_perf_dir.glob("*.parquet"))
+            if cyq_perf_files:
+                sample_files = cyq_perf_files[:20]  # 采样检查前20个
+                
+                for file_path in sample_files:
+                    try:
+                        df = pd.read_parquet(file_path, engine='pyarrow')
+                        if df.empty:
+                            continue
+                        
+                        initial_count = len(df)
+                        duplicates = df.duplicated(subset=['ts_code', 'trade_date'], keep=False)
+                        dup_count = duplicates.sum()
+                        
+                        if dup_count > 0:
+                            dedup_report['cyq_perf_duplicates'].append({
+                                'file': file_path.name,
+                                'total': initial_count,
+                                'duplicates': dup_count
+                            })
+                            
+                            if auto_fix:
+                                df_clean = df.drop_duplicates(subset=['ts_code', 'trade_date'], keep='last').sort_values('trade_date')
+                                df_clean.to_parquet(file_path, engine='pyarrow', index=False)
+                                dedup_report['fixed_count'] += 1
+                                print(f"  ✅ {file_path.name}: 已去重 {dup_count} 条重复记录")
+                            else:
+                                print(f"  ⚠️  {file_path.name}: 发现 {dup_count} 条重复记录")
+                    except Exception as e:
+                        continue
+                
+                if not dedup_report['cyq_perf_duplicates']:
                     print(f"  ✅ 采样检查未发现重复数据")
         
         # 3. 检查daily_basic_all.parquet重复
@@ -1771,7 +1941,7 @@ class DataStatusChecker:
         file_issues_count = len(completeness['file_count_issues'])
         gap_issues_count = len(completeness['date_gap_issues'])
         
-        dup_issues_count = len(dedup['daily_hfq_duplicates']) + len(dedup['moneyflow_duplicates']) + (1 if dedup['daily_basic_duplicates'] else 0)
+        dup_issues_count = len(dedup['daily_hfq_duplicates']) + len(dedup['moneyflow_duplicates']) + len(dedup['cyq_perf_duplicates']) + (1 if dedup['daily_basic_duplicates'] else 0)
         anomaly_issues_count = len(anomalies['zero_prices']) + len(anomalies['negative_volumes']) + len(anomalies['negative_amounts'])
         
         print(f"\n【问题统计】")

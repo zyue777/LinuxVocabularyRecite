@@ -89,6 +89,7 @@ class QuantDataManager:
             'stock_daily_hfq': self.data_center_path / "stock/daily_hfq",
             'stock_daily_qfq': self.data_center_path / "stock/daily_qfq",
             'stock_moneyflow': self.data_center_path / "stock/moneyflow",
+            'stock_cyq_perf': self.data_center_path / "stock/cyq_perf",  # 🆕 每日筹码分布统计数据
             'stock_hk_daily_hfq': self.data_center_path / "stock_hk/daily_hfq",  # 🆕 港股后复权
             'stock_hk_daily_qfq': self.data_center_path / "stock_hk/daily_qfq",  # 🆕 港股前复权
             'index_daily': self.data_center_path / "index/daily",
@@ -2076,20 +2077,23 @@ class QuantDataManager:
             print(f"\n处理指数: {index_code}")
             file_path = self.paths['index_daily'] / f"{index_code}.parquet"
             
-            # 确定开始日期
+            # 获取本地最新日期
+            local_latest_date = self._get_latest_date(file_path)
+            
+            # 简单判断：如果本地最新日期 >= Tushare最新日期，则跳过
+            if local_latest_date and local_latest_date >= end_date:
+                print(f"  {index_code}: 数据已是最新（本地: {local_latest_date}, Tushare: {end_date}）")
+                continue
+            
+            # 确定开始日期（增量更新）
             if start_date is None:
-                latest_date = self._get_latest_date(file_path)
-                if latest_date:
-                    latest_dt = datetime.strptime(latest_date, '%Y%m%d')
+                if local_latest_date:
+                    latest_dt = datetime.strptime(local_latest_date, '%Y%m%d')
                     start_date_actual = (latest_dt + timedelta(days=1)).strftime('%Y%m%d')
                 else:
                     start_date_actual = '19900101'
             else:
                 start_date_actual = start_date
-            
-            if start_date_actual >= end_date:
-                print(f"  {index_code}: 数据已是最新")
-                continue
             
             try:
                 print(f"  获取 {start_date_actual} 到 {end_date} 的数据")
@@ -2398,6 +2402,279 @@ class QuantDataManager:
 
         self._generate_download_report(
             data_type='股票资金流向',
+            total_count=len(stock_list),
+            success_count=len(success_stocks),
+            up_to_date_count=len(up_to_date_stocks),
+            empty_stocks=empty_stocks,
+            failed_stocks=failed_stocks
+        )
+    
+    def _fetch_cyq_perf_worker(self, ts_code: str, start_date: str, end_date: str, stock_info: Dict[str, Any]) -> Dict[str, Any]:
+        """并发工作函数：获取单只股票的每日筹码统计数据（增量更新）"""
+        try:
+            file_path = self.paths['stock_cyq_perf'] / f"{ts_code}.parquet"
+            
+            # 确定开始日期
+            if start_date is not None and start_date != '':
+                start_date_actual = start_date
+            else:
+                # 获取本地最新日期
+                local_latest_date = self._get_latest_date(file_path, 'trade_date')
+                if local_latest_date:
+                    # 检查数据是否已经是最新
+                    if local_latest_date >= end_date:
+                        return {'ts_code': ts_code, 'status': 'up_to_date'}
+                    
+                    # 从最新日期的下一天开始（Tushare API会自动处理交易日历）
+                    latest_dt = datetime.strptime(local_latest_date, '%Y%m%d')
+                    start_date_actual = (latest_dt + timedelta(days=1)).strftime('%Y%m%d')
+                else:
+                    # 如果文件不存在，使用上市日期或默认日期
+                    list_date = stock_info.get(ts_code)
+                    start_date_actual = list_date if list_date and list_date != 'None' else '20100101'  # 筹码数据从2010年开始
+            
+            # 获取数据（直接调用API，让Tushare处理交易日历）
+            df = self._safe_api_call(self.pro.cyq_perf,
+                                   ts_code=ts_code,
+                                   start_date=start_date_actual,
+                                   end_date=end_date)
+            
+            if df is not None and not df.empty:
+                # 验证数据格式：确保有必需的列
+                required_cols = ['ts_code', 'trade_date']
+                missing_cols = [col for col in required_cols if col not in df.columns]
+                if missing_cols:
+                    # 如果缺少必需列，记录错误但不中断
+                    return {'ts_code': ts_code, 'status': 'error',
+                           'message': f'API返回数据缺少必需列: {missing_cols}, 实际列: {list(df.columns)}'}
+                
+                # 确保ts_code列存在（如果API没有返回，则添加）
+                if 'ts_code' not in df.columns:
+                    df['ts_code'] = ts_code
+                
+                # 数据清洗：确保trade_date为字符串格式，数值字段为float
+                if 'trade_date' in df.columns:
+                    df['trade_date'] = df['trade_date'].astype(str)
+                
+                # 确保数值字段类型正确
+                numeric_cols = ['cost_5pct', 'cost_95pct', 'weight_avg', 'winner_rate']
+                for col in numeric_cols:
+                    if col in df.columns:
+                        df[col] = pd.to_numeric(df[col], errors='coerce')
+                
+                return {'ts_code': ts_code, 'status': 'success', 'data': (df, file_path)}
+            else:
+                return {'ts_code': ts_code, 'status': 'api_empty'}
+        except Exception as e:
+            return {'ts_code': ts_code, 'status': 'error', 'message': str(e)}
+    
+    def update_stock_cyq_perf(self, start_date: Optional[str] = None, end_date: Optional[str] = None, 
+                              stock_list: Optional[List[str]] = None, batch_size: int = 100, max_workers: int = 3):
+        """
+        更新股票每日筹码分布统计数据（cyq_perf）- 支持高并发下载和增量更新
+        
+        Args:
+            start_date: 开始日期 (YYYYMMDD)
+            end_date: 结束日期 (YYYYMMDD)
+            stock_list: 股票代码列表，如果为None则获取所有股票
+            batch_size: 批处理大小 (用于分批提交任务到线程池，默认100，适配200次/分钟限制)
+            max_workers: 最大并发线程数（默认3，降低并发以适配API限制）
+        """
+        print("=" * 60)
+        print("开始更新股票每日筹码分布统计数据（高并发模式）")
+        print(f"最大并发线程数: {max_workers}")
+        print("注意: cyq_perf接口限制为每分钟200次，已优化限流策略")
+        print("=" * 60)
+        
+        # 确保目录存在
+        self.paths['stock_cyq_perf'].mkdir(parents=True, exist_ok=True)
+        
+        # 🎯 直接获取Tushare实际最新数据日期
+        if end_date is None:
+            print("查询 Tushare 实际最新数据日期...")
+            end_date = self._get_tushare_latest_date()
+            print(f"✅ Tushare 实际最新数据日期: {end_date}")
+        
+        # 获取股票列表
+        if stock_list is None:
+            print("获取股票列表...")
+            stock_basic_df = self._safe_api_call(self.pro.stock_basic, 
+                                            exchange='', 
+                                            list_status='L', 
+                                            fields='ts_code,list_date')
+            if stock_basic_df is None:
+                print("获取股票列表失败")
+                return
+            stock_list = stock_basic_df['ts_code'].tolist()
+            stock_info = dict(zip(stock_basic_df['ts_code'], stock_basic_df['list_date']))
+        else:
+            # 如果提供了股票列表，也需要获取上市日期信息
+            stock_basic_df = self._safe_api_call(self.pro.stock_basic, 
+                                            ts_code=','.join(stock_list),
+                                            fields='ts_code,list_date')
+            stock_info = dict(zip(stock_basic_df['ts_code'], stock_basic_df['list_date'])) if stock_basic_df is not None else {}
+        
+        # 类型守护：保证stock_list和end_date不是None
+        assert stock_list is not None
+        assert end_date is not None  # end_date在前面已经确保有值
+        print(f"共需更新 {len(stock_list)} 只股票")
+        
+        # 🚀 优化：全局预检查 - 采样检查是否需要更新
+        # 改进：均匀间隔采样（覆盖开头、中间、结尾），避免只检查前100只导致误判
+        print(f"\n检查本地数据状态（均匀间隔采样检查）...")
+        print(f"目标更新日期: {end_date}")
+        cyq_perf_dir = self.paths['stock_cyq_perf']
+        
+        # 均匀间隔采样：确保覆盖整个列表（开头、中间、结尾都有）
+        sample_size = min(200, len(stock_list))  # 采样数量200
+        if len(stock_list) <= sample_size:
+            sample_stocks = stock_list
+        else:
+            # 使用均匀间隔采样，确保覆盖整个列表
+            # 计算采样间隔，确保能覆盖到最后一个
+            step = (len(stock_list) - 1) / (sample_size - 1) if sample_size > 1 else 0
+            sample_stocks = []
+            for i in range(sample_size):
+                idx = int(i * step) if step > 0 else i
+                if idx < len(stock_list):
+                    sample_stocks.append(stock_list[idx])
+            
+            # 确保包含最后一个（边界检查）
+            if sample_stocks[-1] != stock_list[-1]:
+                sample_stocks[-1] = stock_list[-1]
+            
+            # 去重（保持顺序）
+            seen = set()
+            sample_stocks = [x for x in sample_stocks if not (x in seen or seen.add(x))]
+        
+        file_exists_count = 0
+        up_to_date_count_sample = 0
+        for ts_code in sample_stocks:
+            file_path = cyq_perf_dir / f"{ts_code}.parquet"
+            if file_path.exists():
+                file_exists_count += 1
+                local_latest_date = self._get_latest_date(file_path, 'trade_date')
+                if local_latest_date and local_latest_date >= end_date:
+                    up_to_date_count_sample += 1
+        
+        # 计算文件存在率
+        file_existence_rate = file_exists_count / sample_size if sample_size > 0 else 0
+        
+        # 改进逻辑：只有当文件存在率 > 90% 且 最新率 > 95% 时才跳过
+        # 这样可以避免：1) 很多股票没有文件 2) 文件存在但数据不完整
+        if file_exists_count > 0:
+            up_to_date_rate = up_to_date_count_sample / file_exists_count
+        else:
+            up_to_date_rate = 0
+        
+        # 只有当文件存在率 >= 90% 且 在已存在的文件中最新率 >= 95% 时才跳过
+        if file_existence_rate >= 0.90 and up_to_date_rate >= 0.95:
+            print(f"✅ 采样检查: {up_to_date_count_sample}/{file_exists_count} 只股票数据已是最新")
+            print(f"✅ 文件存在率: {file_existence_rate:.1%} ({file_exists_count}/{sample_size})")
+            print(f"✅ 数据已经更新到 {end_date}，无需重复下载")
+            
+            # 生成报告（所有股票都是up_to_date）
+            self._generate_download_report(
+                data_type='股票每日筹码统计',
+                total_count=len(stock_list),
+                success_count=0,
+                up_to_date_count=len(stock_list),
+                empty_stocks=[],
+                failed_stocks=[]
+            )
+            return
+        else:
+            print(f"📊 采样检查结果:")
+            print(f"   - 文件存在率: {file_existence_rate:.1%} ({file_exists_count}/{sample_size})")
+            if file_exists_count > 0:
+                print(f"   - 数据最新率: {up_to_date_rate:.1%} ({up_to_date_count_sample}/{file_exists_count})")
+            else:
+                print(f"   - 数据最新率: 0% (无文件)")
+            print(f"📊 继续检查所有股票...")
+        
+        up_to_date_stocks = []
+        success_stocks = []
+        empty_stocks = []
+        failed_stocks = []
+        batch_data_to_save = []
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            for batch_start in range(0, len(stock_list), batch_size):
+                batch_end = min(batch_start + batch_size, len(stock_list))
+                batch_stocks = stock_list[batch_start:batch_end]
+                
+                print(f"\n提交批次 {batch_start//batch_size + 1}: 股票 {batch_start+1}-{batch_end} ({len(batch_stocks)} 只)")
+                
+                futures = {executor.submit(self._fetch_cyq_perf_worker, ts_code, start_date or '', end_date, stock_info): ts_code for ts_code in batch_stocks}
+                
+                for future in as_completed(futures):
+                    try:
+                        result = future.result()
+                        ts_code = result['ts_code']
+                        status = result['status']
+
+                        if status == 'success':
+                            batch_data_to_save.append(result['data'])
+                            success_stocks.append(ts_code)
+                        elif status == 'up_to_date':
+                            up_to_date_stocks.append(ts_code)
+                        elif status == 'api_empty':
+                            empty_stocks.append(ts_code)
+                        elif status == 'error':
+                            failed_stocks.append((ts_code, result['message']))
+                    except Exception as e:
+                        # Future itself might fail
+                        failed_stocks.append((futures[future], str(e)))
+
+                if batch_data_to_save:
+                    print(f"  批量保存 {len(batch_data_to_save)} 只股票的数据...")
+                    for df, file_path in batch_data_to_save:
+                        try:
+                            # 确保数据有必要的列
+                            if df.empty:
+                                continue
+                            
+                            # 检查必需的列是否存在
+                            required_cols = ['ts_code', 'trade_date']
+                            missing_cols = [col for col in required_cols if col not in df.columns]
+                            if missing_cols:
+                                print(f"    ⚠️  {file_path.name}: 缺少必需列 {missing_cols}，跳过保存")
+                                failed_stocks.append((file_path.stem, f"缺少列: {missing_cols}"))
+                                continue
+                            
+                            if file_path.exists():
+                                try:
+                                    existing_df = pd.read_parquet(file_path, engine='pyarrow')
+                                    if not existing_df.empty:
+                                        # 确保现有数据也有必需的列
+                                        if all(col in existing_df.columns for col in required_cols):
+                                            combined_df = pd.concat([existing_df, df], ignore_index=True)
+                                            combined_df = combined_df.drop_duplicates(subset=['ts_code', 'trade_date']).sort_values('trade_date')
+                                            combined_df.to_parquet(file_path, engine='pyarrow', index=False)
+                                        else:
+                                            # 如果现有文件格式不对，直接覆盖
+                                            df.to_parquet(file_path, engine='pyarrow', index=False)
+                                    else:
+                                        # 现有文件为空，直接保存新数据
+                                        df.to_parquet(file_path, engine='pyarrow', index=False)
+                                except Exception as e:
+                                    # 如果读取现有文件失败，直接覆盖
+                                    print(f"    读取现有文件失败，将覆盖: {file_path.name}")
+                                    df.to_parquet(file_path, engine='pyarrow', index=False)
+                            else:
+                                df.to_parquet(file_path, engine='pyarrow', index=False)
+                        except Exception as e:
+                            print(f"    保存 {file_path.name} 数据失败: {e}")
+                            failed_stocks.append((file_path.stem, str(e)))
+                    batch_data_to_save.clear()
+                
+                # 限流：控制API调用频率为200次/分钟（cyq_perf接口限制）
+                # 每批次100个请求，需要等待 60/(200/100) = 30秒
+                # 确保不超过Tushare的200次/分钟限制
+                time.sleep(30)
+
+        self._generate_download_report(
+            data_type='股票每日筹码统计',
             total_count=len(stock_list),
             success_count=len(success_stocks),
             up_to_date_count=len(up_to_date_stocks),
@@ -3598,9 +3875,10 @@ def main():
         print("13. 更新港股通个股日K线 (🆕)")
         print("14. 更新四维择时策略所需数据（指数估值PE/PB + 国债收益率）")
         print("15. 更新CFFEX期货主力合约前20名会员持仓数据 (🆕)")
+        print("16. 更新股票每日筹码分布统计数据 (🆕)")
         # 注意：财务指标数据请使用专门的程序单独更新（每季度一次）
         
-        choice = input("请输入选择 (1-15): ").strip()
+        choice = input("请输入选择 (1-16): ").strip()
         
         
         if choice == '1':
@@ -3609,6 +3887,8 @@ def main():
             manager.update_stock_daily_hfq()
         elif choice == '3':
             manager.update_stock_moneyflow()
+        elif choice == '16':
+            manager.update_stock_cyq_perf()
         elif choice == '4':
             manager.update_index_constituents()
         elif choice == '5':

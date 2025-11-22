@@ -57,6 +57,7 @@
     │   ├── hk_daily_hfq/           # 港股行情数据 (New): 日K线（源自 Akshare）
     │   ├── daily_basic/            # 每日基础指标 (市值、PE/PB)
     │   ├── moneyflow/              # 资金流向数据 🆕 (5,400+只股票)
+    │   ├── cyq_perf/                # 每日筹码分布统计数据 🆕
     │   ├── fina_indicator/         # 财务指标 (5,444只)
     │   └── financial_tables/       # 财务三大表
     ├── market_metadata/            # 市场元数据 🆕
@@ -266,7 +267,89 @@ manager.update_stock_moneyflow()  # 增量更新
 
 ---
 
-### 5️⃣ 国债收益率数据 🆕
+### 5️⃣ 每日筹码分布统计数据 🆕
+
+**绝对路径**: `quant_data_center/stock/cyq_perf/{ts_code}.parquet`  
+**用途**: 每日筹码分布衍生的统计数据，用于筹码分析、压力支撑判断、情绪指标构建等  
+**数据源**: Tushare Pro API (`cyq_perf`)，文档ID: 294
+
+**核心字段物理含义**:
+- **cost_5pct** (成本5%分位数): 持仓成本最低的5%股东的平均持仓成本（元）
+  - 反映低价筹码的集中度
+  - 当股价接近此值时，可能面临低价筹码的抛压
+- **cost_95pct** (成本95%分位数): 持仓成本最高的5%股东的平均持仓成本（元）
+  - 反映高价筹码的集中度
+  - 当股价接近此值时，可能面临高成本持仓的解套压力
+- **weight_avg** (加权平均成本): 所有股东持仓成本的加权平均值（元）
+  - 反映整体持仓成本水平
+  - 用于判断当前股价相对于平均成本的位置
+  - 是筹码分布的核心指标之一
+- **winner_rate** (获利比例): 当前股价高于持仓成本的股东比例（%）
+  - 反映市场整体盈亏情况
+  - 用于判断市场情绪和抛压压力
+  - 获利比例高时，可能面临获利了结压力
+  - 获利比例低时，可能面临套牢盘压力
+
+**数据特点**:
+- ✅ **更新频率**: 每日更新
+- ✅ **数据范围**: 从2010年开始（或股票上市日期）
+- ✅ **存储方式**: 每只股票一个独立文件 (`{ts_code}.parquet`)
+- ✅ **数据格式**: Parquet（高效列式存储）
+- ✅ **增量更新**: 支持断点续传和增量更新
+- ⚠️ **API限制**: 每分钟最多200次调用（需要适当积分权限）
+
+**使用示例**:
+```python
+import pandas as pd
+
+# 读取单只股票的筹码统计数据
+df = pd.read_parquet('quant_data_center/stock/cyq_perf/000001.SZ.parquet')
+
+# 计算当前获利比例
+current_winner_rate = df['winner_rate'].iloc[-1]
+print(f"当前获利比例: {current_winner_rate:.2f}%")
+
+# 分析成本分布
+print(f"成本5%分位数: {df['cost_5pct'].iloc[-1]:.2f}元")
+print(f"加权平均成本: {df['weight_avg'].iloc[-1]:.2f}元")
+print(f"成本95%分位数: {df['cost_95pct'].iloc[-1]:.2f}元")
+
+# 判断当前股价相对于成本分布的位置
+current_price = 10.0
+if current_price < df['cost_5pct'].iloc[-1]:
+    print("当前股价低于5%分位数，可能面临低价筹码抛压")
+elif current_price > df['cost_95pct'].iloc[-1]:
+    print("当前股价高于95%分位数，可能面临高成本持仓解套压力")
+else:
+    print("当前股价在成本分布区间内")
+```
+
+**应用场景**:
+- 筹码分析：分析股票筹码分布情况，判断主力成本区间
+- 压力支撑：通过成本分布判断关键压力位和支撑位
+- 情绪指标：通过获利比例判断市场情绪和抛压压力
+- 择时策略：结合价格和成本分布构建择时策略
+- 风险控制：识别高成本持仓集中的风险区域
+
+**更新数据**:
+```python
+from download_data_manager import QuantDataManager
+
+manager = QuantDataManager()
+manager.update_stock_cyq_perf()  # 增量更新
+
+# 或指定股票列表
+manager.update_stock_cyq_perf(stock_list=['000001.SZ', '000002.SZ'])
+```
+
+**注意事项**:
+- Tushare的`cyq_perf`接口可能需要一定的积分权限，请确保账户有足够权限
+- 部分股票可能没有筹码统计数据（特别是新上市股票），会返回空数据
+- 建议每日更新，确保数据及时性
+
+---
+
+### 6️⃣ 国债收益率数据 🆕
 
 **绝对路径**: `quant_data_center/factors/macro/china_bond_yield_10y.parquet`  
 **用途**: 10年期国债收益率，作为无风险利率参考或宏观择时因子
@@ -316,7 +399,7 @@ python download_data_manager.py
 
 ---
 
-### 6️⃣ CFFEX期货主力合约前20名会员持仓数据 🆕
+### 7️⃣ CFFEX期货主力合约前20名会员持仓数据 🆕
 
 **绝对路径**: `quant_data_center/market/derivatives/futures/holding/{variety}_top20.parquet`  
 **用途**: CFFEX（中金所）期货主力合约前20名会员持仓数据，用于构建"情绪面"多空比指标，支持期指择时策略
@@ -377,7 +460,7 @@ manager.update_future_holdings(varieties=['IF', 'IC'])
 
 ---
 
-### 7️⃣ 市场元数据与工具函数 🆕
+### 8️⃣ 市场元数据与工具函数 🆕
 
 **市场元数据**:
 - `market_metadata/chinext_stocks.parquet`: 创业板股票标记
@@ -403,7 +486,7 @@ df_qfq = convert_hfq_to_qfq('000001.SZ')
 
 ---
 
-### 8️⃣ 数据完整性检查 (v2.0优化 + 新增功能)
+### 9️⃣ 数据完整性检查 (v2.0优化 + 新增功能)
 
 ```bash
 python check_data_completeness.py
@@ -804,6 +887,7 @@ logging.basicConfig(level=logging.DEBUG)
 
 | 版本 | 日期 | 主要更新 |
 |------|------|---------|
+| **v2.3** | 2025-11-22 | 🆕 新增股票每日筹码分布统计数据（cyq_perf）<br>🆕 包含成本分位数、加权平均成本、获利比例等核心指标<br>🆕 支持筹码分析、压力支撑判断、情绪指标构建等应用场景<br>🆕 优化采样检查逻辑（均匀间隔采样，覆盖整个列表） |
 | **v2.2** | 2025-11-20 | 🆕 新增CFFEX期货主力合约前20名会员持仓数据<br>🆕 支持IF、IC、IM、IH四个期指品种<br>🆕 自动跟踪每日主力合约，确保数据连续性<br>🆕 用于构建"情绪面"多空比指标，支持期指择时策略 |
 | **v2.1** | 2025-11-10 | 🆕 新增资金流向数据（moneyflow）<br>🆕 新增市场元数据（创业板标记等）<br>🆕 前复权转换功能<br>🆕 数据质量检查升级（完整度、去重、异常值） |
 | **v2.0** | 2025-10-28 | ⭐ FF5因子优化（OCF+NOA）<br>⭐ 新增数据完整性检查v2.0<br>⭐ 完善文档体系 |
@@ -837,8 +921,8 @@ logging.basicConfig(level=logging.DEBUG)
 
 *Built with ❤️ for Quantitative Research*
 
-**最后更新**: 2025-11-20  
-**数据版本**: v2.2  
+**最后更新**: 2025-11-22  
+**数据版本**: v2.3  
 **项目状态**: ✅ 生产就绪
 
 </div>
