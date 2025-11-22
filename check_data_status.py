@@ -846,6 +846,66 @@ class DataStatusChecker:
         
         return status
     
+    def check_future_holdings(self) -> Dict[str, Any]:
+        """检查CFFEX期货主力合约前20名会员持仓数据"""
+        dir_path = self.data_center_path / "market" / "derivatives" / "futures" / "holding"
+        
+        status = {
+            'name': 'CFFEX期货主力合约持仓',
+            'path': str(dir_path),
+            'exists': dir_path.exists(),
+            'latest_date': None,
+            'file_count': 0,
+            'varieties': []
+        }
+        
+        if dir_path.exists():
+            # 检查4个品种的文件
+            varieties = ['IF', 'IC', 'IM', 'IH']
+            files = []
+            for variety in varieties:
+                file_path = dir_path / f"{variety}_top20.parquet"
+                if file_path.exists():
+                    files.append(file_path)
+                    try:
+                        latest_date = self._get_latest_date(file_path, 'trade_date')
+                        if latest_date:
+                            # 读取数据获取记录数
+                            df = pd.read_parquet(file_path, engine='pyarrow', columns=['trade_date'])
+                            record_count = len(df)
+                            
+                            # 获取日期范围
+                            date_range = None
+                            if not df.empty:
+                                date_range = {
+                                    'start': df['trade_date'].min(),
+                                    'end': df['trade_date'].max()
+                                }
+                            
+                            status['varieties'].append({
+                                'code': variety,
+                                'latest_date': latest_date,
+                                'record_count': record_count,
+                                'date_range': date_range
+                            })
+                    except Exception as e:
+                        status['varieties'].append({
+                            'code': variety,
+                            'latest_date': None,
+                            'error': str(e)[:50]
+                        })
+                        continue
+            
+            status['file_count'] = len(files)
+            
+            # 获取所有品种中的最新日期
+            if status['varieties']:
+                latest_dates = [v['latest_date'] for v in status['varieties'] if v.get('latest_date')]
+                if latest_dates:
+                    status['latest_date'] = max(latest_dates)
+        
+        return status
+    
     def check_all(self) -> List[Dict[str, Any]]:
         """检查所有数据状态"""
         print("\n" + "="*80)
@@ -886,6 +946,7 @@ class DataStatusChecker:
         all_status.append(self.check_margin_total())
         all_status.append(self.check_margin_detail())
         all_status.append(self.check_moneyflow_hsgt())
+        all_status.append(self.check_future_holdings())  # 🆕 新增：期货持仓数据
         
         # 前复权转换功能 🆕 新增
         all_status.append(self.check_qfq_conversion())
@@ -1064,6 +1125,43 @@ class DataStatusChecker:
                 if 'has_backup' in status:
                     backup_status = '✅ 已备份' if status['has_backup'] else '⚠️  无备份'
                     print(f"   备份状态: {backup_status}")
+            
+            # 显示期货持仓品种详情
+            if name == 'CFFEX期货主力合约持仓' and 'varieties' in status and status['varieties']:
+                print(f"   品种详情:")
+                variety_names = {
+                    'IF': '沪深300期指',
+                    'IC': '中证500期指',
+                    'IM': '中证1000期指',
+                    'IH': '上证50期指'
+                }
+                for variety in status['varieties']:
+                    variety_code = variety['code']
+                    variety_name = variety_names.get(variety_code, variety_code)
+                    
+                    if variety.get('latest_date'):
+                        var_date = variety['latest_date']
+                        if len(var_date) == 8:
+                            formatted_date = f"{var_date[:4]}-{var_date[4:6]}-{var_date[6:8]}"
+                        else:
+                            formatted_date = var_date
+                        
+                        record_count = variety.get('record_count', 0)
+                        date_info = f", {formatted_date}"
+                        
+                        # 如果有日期范围，也显示
+                        if variety.get('date_range'):
+                            dr = variety['date_range']
+                            if dr.get('start') and dr.get('end'):
+                                start = self._format_date(dr['start'])
+                                end = self._format_date(dr['end'])
+                                date_info = f", {start} ~ {end}"
+                        
+                        print(f"     - {variety_name}({variety_code}): {record_count:,}条{date_info}")
+                    elif variety.get('error'):
+                        print(f"     - {variety_name}({variety_code}): ❌ 读取失败 - {variety['error']}")
+                    else:
+                        print(f"     - {variety_name}({variety_code}): ⚠️  数据不存在")
         
         print("\n" + "="*80)
         print("✅ 数据状态检查完成")
@@ -1095,6 +1193,11 @@ class DataStatusChecker:
                 total_records += status['count']
             if 'total_records' in status and status['total_records'] > 0:
                 total_records += status['total_records']
+            # 统计期货持仓数据的记录数（从varieties中统计）
+            if 'varieties' in status and status['varieties']:
+                for variety in status['varieties']:
+                    if 'record_count' in variety and variety['record_count'] > 0:
+                        total_records += variety['record_count']
             
             # 收集日期范围
             if status.get('exists') and status.get('latest_date'):
@@ -1127,6 +1230,7 @@ class DataStatusChecker:
             ('全球重要指数日K线', ['全球重要指数']),
             ('股票每日基础指标', ['股票每日基础指标']),
             ('无风险利率', ['无风险利率']),
+            ('CFFEX期货主力合约持仓', ['CFFEX期货', '主力合约持仓']),
         ]
         
         for display_name, keywords in core_data:

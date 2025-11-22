@@ -106,6 +106,7 @@ class QuantDataManager:
             'financial_income': self.data_center_path / "stock/financial_tables/income",
             'financial_balancesheet': self.data_center_path / "stock/financial_tables/balancesheet",
             'financial_cashflow': self.data_center_path / "stock/financial_tables/cashflow",
+            'futures_holding': self.data_center_path / "market/derivatives/futures/holding",
         }
         
         # 确保所有目录存在
@@ -2742,6 +2743,193 @@ class QuantDataManager:
         except Exception as e:
             print(f"更新沪深港通资金流向数据失败: {e}")
     
+    def update_future_holdings(self, varieties: Optional[List[str]] = None, 
+                               start_date: Optional[str] = None, end_date: Optional[str] = None):
+        """
+        更新CFFEX期货主力合约前20名会员持仓数据
+        
+        用于构建"情绪面"多空比指标，支持IF、IC、IM、IH等品种
+        
+        Args:
+            varieties: 期货品种列表，默认为 ['IF', 'IC', 'IM', 'IH']
+            start_date: 开始日期 (YYYYMMDD)，默认为None（自动从本地最新日期开始）
+            end_date: 结束日期 (YYYYMMDD)，默认为None（使用当前日期）
+        """
+        print("=" * 60)
+        print("开始更新CFFEX期货主力合约前20名会员持仓数据")
+        print("=" * 60)
+        
+        if varieties is None:
+            varieties = ['IF', 'IC', 'IM', 'IH']
+        
+        # 确保目录存在
+        save_dir = self.paths['futures_holding']
+        save_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 确定结束日期
+        if end_date is None:
+            end_date = datetime.now().strftime('%Y%m%d')
+        
+        for variety in varieties:
+            print(f"\n处理品种: {variety}")
+            file_path = save_dir / f"{variety}_top20.parquet"
+            
+            try:
+                # 1. 获取该品种的历史主力合约映射表
+                print(f"  获取 {variety} 主力合约映射...")
+                mapping_df = self._safe_api_call(
+                    self.pro.fut_mapping,
+                    ts_code=f'{variety}.CFX'
+                )
+                
+                if mapping_df is None or mapping_df.empty:
+                    print(f"  ⚠️  无法获取 {variety} 的主力合约映射数据")
+                    continue
+                
+                # 确保 trade_date 是字符串格式
+                mapping_df['trade_date'] = mapping_df['trade_date'].astype(str)
+                mapping_df = mapping_df.sort_values('trade_date')
+                
+                # 确定开始日期（增量更新）
+                start_date_actual = start_date
+                if start_date is None:
+                    if file_path.exists():
+                        try:
+                            existing_df = pd.read_parquet(file_path, engine='pyarrow')
+                            if not existing_df.empty and 'trade_date' in existing_df.columns:
+                                last_date = existing_df['trade_date'].max()
+                                # 从下一天开始更新
+                                last_dt = datetime.strptime(str(last_date), '%Y%m%d')
+                                start_date_actual = (last_dt + timedelta(days=1)).strftime('%Y%m%d')
+                                print(f"  本地最新日期: {last_date}，从 {start_date_actual} 开始增量更新")
+                            else:
+                                start_date_actual = '20160101'  # 默认从2016年开始
+                        except Exception as e:
+                            print(f"  ⚠️  读取本地文件失败: {e}，从头开始下载")
+                            start_date_actual = '20160101'
+                    else:
+                        start_date_actual = '20160101'
+                
+                # 筛选需要下载的日期范围
+                target_mapping = mapping_df[
+                    (mapping_df['trade_date'] >= start_date_actual) & 
+                    (mapping_df['trade_date'] <= end_date)
+                ].copy()
+                
+                if target_mapping.empty:
+                    print(f"  ✅ {variety} 数据已是最新（无需更新）")
+                    continue
+                
+                print(f"  需要下载 {len(target_mapping)} 个交易日的数据")
+                
+                # 2. 逐日下载持仓数据
+                new_data = []
+                success_count = 0
+                failed_count = 0
+                
+                for idx, row in target_mapping.iterrows():
+                    trade_date = str(row['trade_date'])
+                    # mapping_ts_code 如 'IF2006.CFX' -> symbol 'IF2006'
+                    mapping_ts_code = str(row['mapping_ts_code'])
+                    contract = mapping_ts_code.split('.')[0] if '.' in mapping_ts_code else mapping_ts_code
+                    
+                    if (success_count + failed_count) % 50 == 0 and (success_count + failed_count) > 0:
+                        print(f"    进度: {success_count + failed_count}/{len(target_mapping)} "
+                              f"({(success_count + failed_count)/len(target_mapping)*100:.1f}%)")
+                    
+                    try:
+                        # 获取当日前20名持仓
+                        # 注意：fut_holding 的 symbol 参数只需要合约名（如 IF2406），不需要后缀
+                        df = self._safe_api_call(
+                            self.pro.fut_holding,
+                            trade_date=trade_date,
+                            symbol=contract,
+                            exchange='CFFEX'
+                        )
+                        
+                        if df is not None and not df.empty:
+                            # 添加品种和合约标识
+                            df['ts_code'] = variety  # 标记品种
+                            df['contract'] = contract  # 标记具体合约
+                            
+                            # 确保 trade_date 列存在且格式正确
+                            if 'trade_date' not in df.columns:
+                                df['trade_date'] = trade_date
+                            else:
+                                df['trade_date'] = df['trade_date'].astype(str)
+                            
+                            # 只保留前20名（如果API返回了排名字段）
+                            # 注意：fut_holding API 可能已经只返回前20名，这里做双重保险
+                            if 'rank' in df.columns:
+                                df = df[df['rank'] <= 20].copy()
+                            
+                            new_data.append(df)
+                            success_count += 1
+                        else:
+                            # 空数据可能是非交易日或数据尚未发布
+                            failed_count += 1
+                        
+                        # API限流控制
+                        time.sleep(0.2)
+                        
+                    except Exception as e:
+                        failed_count += 1
+                        if failed_count <= 5:  # 只打印前5个错误
+                            print(f"    ⚠️  获取 {trade_date} {contract} 失败: {e}")
+                        continue
+                
+                # 3. 保存数据（增量更新）
+                if new_data:
+                    df_new = pd.concat(new_data, ignore_index=True)
+                    
+                    # 确保数据去重（按 trade_date, contract, broker）
+                    df_new = df_new.drop_duplicates(
+                        subset=['trade_date', 'contract', 'broker'],
+                        keep='last'
+                    ).sort_values(['trade_date', 'contract'])
+                    
+                    # 合并现有数据
+                    if file_path.exists():
+                        try:
+                            df_old = pd.read_parquet(file_path, engine='pyarrow')
+                            if not df_old.empty:
+                                # 合并并去重
+                                df_final = pd.concat([df_old, df_new], ignore_index=True)
+                                df_final = df_final.drop_duplicates(
+                                    subset=['trade_date', 'contract', 'broker'],
+                                    keep='last'
+                                ).sort_values(['trade_date', 'contract'])
+                            else:
+                                df_final = df_new
+                        except Exception as e:
+                            print(f"  ⚠️  读取现有文件失败，将覆盖: {e}")
+                            df_final = df_new
+                    else:
+                        df_final = df_new
+                    
+                    # 保存文件
+                    df_final.to_parquet(file_path, engine='pyarrow', index=False)
+                    
+                    print(f"  ✅ {variety} 更新完成:")
+                    print(f"     本次新增: {len(df_new)} 条记录")
+                    print(f"     总计: {len(df_final)} 条记录")
+                    print(f"     成功: {success_count} 个交易日")
+                    print(f"     失败/空数据: {failed_count} 个交易日")
+                else:
+                    print(f"  ⚠️  {variety} 无新数据可保存")
+                    if failed_count > 0:
+                        print(f"     失败/空数据: {failed_count} 个交易日")
+                
+            except Exception as e:
+                print(f"  ❌ 处理 {variety} 失败: {e}")
+                import traceback
+                traceback.print_exc()
+                continue
+        
+        print("\n" + "=" * 60)
+        print("CFFEX期货主力合约持仓数据更新完成")
+        print("=" * 60)
+    
     # 注意：财务指标更新功能已移除，请使用专门的程序单独更新（每季度一次）
 
     def _get_latest_date_from_files(self, data_type: str) -> Optional[str]:
@@ -3409,9 +3597,10 @@ def main():
         print("12. 更新个股融资融券明细")
         print("13. 更新港股通个股日K线 (🆕)")
         print("14. 更新四维择时策略所需数据（指数估值PE/PB + 国债收益率）")
+        print("15. 更新CFFEX期货主力合约前20名会员持仓数据 (🆕)")
         # 注意：财务指标数据请使用专门的程序单独更新（每季度一次）
         
-        choice = input("请输入选择 (1-14): ").strip()
+        choice = input("请输入选择 (1-15): ").strip()
         
         
         if choice == '1':
@@ -3475,6 +3664,9 @@ def main():
                 include_options_pcr=False,
                 include_futures_holding=False
             )
+        elif choice == '15':
+            # 更新CFFEX期货主力合约前20名会员持仓数据
+            manager.update_future_holdings()
         else:
             print("无效选择")
             return 1

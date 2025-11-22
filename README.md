@@ -19,6 +19,7 @@
 - 🆕 **市场元数据**: 创业板、科创板等市场分类快速筛选
 - 🆕 **前复权转换**: 实时转换后复权为前复权，无需额外存储
 - 🆕 **数据质量保障**: 完整度检查、去重、异常值检测
+- 🆕 **期货持仓数据**: CFFEX期指主力合约前20名会员持仓，支持情绪面多空比分析
 
 ---
 
@@ -61,6 +62,18 @@
     ├── market_metadata/            # 市场元数据 🆕
     │   ├── chinext_stocks.parquet  # 创业板股票标记
     │   └── stock_market_map.parquet # 市场分类映射
+    ├── market/                    # 市场数据 🆕
+    │   ├── margin_total/          # 融资融券交易汇总
+    │   ├── margin_detail/         # 融资融券交易明细
+    │   ├── hsgt/                  # 沪深港通资金流向
+    │   └── derivatives/           # 衍生品数据 🆕
+    │       └── futures/           # 期货数据
+    │           └── holding/       # 期货主力合约持仓
+    │               ├── IF_top20.parquet  # 沪深300期指前20名会员持仓
+    │               ├── IC_top20.parquet  # 中证500期指前20名会员持仓
+    │               ├── IM_top20.parquet  # 中证1000期指前20名会员持仓
+    │               └── IH_top20.parquet  # 上证50期指前20名会员持仓
+    ├── stock/
     │       ├── income/             # 利润表 (5,444只)
     │       ├── balancesheet/       # 资产负债表 (5,444只)
     │       └── cashflow/           # 现金流量表 (5,444只) ⭐v2.0核心
@@ -303,7 +316,68 @@ python download_data_manager.py
 
 ---
 
-### 6️⃣ 市场元数据与工具函数 🆕
+### 6️⃣ CFFEX期货主力合约前20名会员持仓数据 🆕
+
+**绝对路径**: `quant_data_center/market/derivatives/futures/holding/{variety}_top20.parquet`  
+**用途**: CFFEX（中金所）期货主力合约前20名会员持仓数据，用于构建"情绪面"多空比指标，支持期指择时策略
+
+**数据特点**:
+- ✅ **主力合约自动跟踪**: 通过 `fut_mapping` API获取每日主力合约，确保数据连续性
+- ✅ **前20名会员**: 只保留每日、每合约、多空排名均为前20名的会员数据
+- ✅ **支持品种**: IF（沪深300）、IC（中证500）、IM（中证1000）、IH（上证50）
+- ✅ **增量更新**: 自动从本地最新日期开始更新，避免重复下载
+
+**关键字段**:
+- `trade_date`: 交易日期 (YYYYMMDD格式)
+- `ts_code`: 品种代码 (IF/IC/IM/IH)
+- `contract`: 具体合约代码 (如 IF2406)
+- `broker`: 期货公司会员名称
+- `long_hld`: 多单持仓量
+- `short_hld`: 空单持仓量
+- `long_chg`: 多单增减
+- `short_chg`: 空单增减
+
+**使用示例**:
+```python
+import pandas as pd
+
+# 读取IF（沪深300期指）持仓数据
+df_if = pd.read_parquet('quant_data_center/market/derivatives/futures/holding/IF_top20.parquet')
+
+# 计算多空比（前20名会员）
+df_20240315 = df_if[df_if['trade_date'] == '20240315']
+long_total = df_20240315['long_hld'].sum()
+short_total = df_20240315['short_hld'].sum()
+long_short_ratio = long_total / short_total if short_total > 0 else 0
+print(f"IF多空比: {long_short_ratio:.4f}")
+
+# 计算历史多空比序列（用于择时）
+daily_stats = df_if.groupby('trade_date').agg({
+    'long_hld': 'sum',
+    'short_hld': 'sum'
+}).reset_index()
+daily_stats['long_short_ratio'] = daily_stats['long_hld'] / daily_stats['short_hld']
+```
+
+**更新数据**:
+```python
+from download_data_manager import QuantDataManager
+
+manager = QuantDataManager()
+manager.update_future_holdings()  # 更新所有品种（IF, IC, IM, IH）
+
+# 或只更新指定品种
+manager.update_future_holdings(varieties=['IF', 'IC'])
+```
+
+**应用场景**:
+- 构建期指择时策略（IF/IC/IM对应不同指数）
+- 分析机构资金在期指市场的多空倾向
+- 实时监控期指市场主力资金的情绪变化
+
+---
+
+### 7️⃣ 市场元数据与工具函数 🆕
 
 **市场元数据**:
 - `market_metadata/chinext_stocks.parquet`: 创业板股票标记
@@ -329,7 +403,7 @@ df_qfq = convert_hfq_to_qfq('000001.SZ')
 
 ---
 
-### 7️⃣ 数据完整性检查 (v2.0优化 + 新增功能)
+### 8️⃣ 数据完整性检查 (v2.0优化 + 新增功能)
 
 ```bash
 python check_data_completeness.py
@@ -730,6 +804,7 @@ logging.basicConfig(level=logging.DEBUG)
 
 | 版本 | 日期 | 主要更新 |
 |------|------|---------|
+| **v2.2** | 2025-11-20 | 🆕 新增CFFEX期货主力合约前20名会员持仓数据<br>🆕 支持IF、IC、IM、IH四个期指品种<br>🆕 自动跟踪每日主力合约，确保数据连续性<br>🆕 用于构建"情绪面"多空比指标，支持期指择时策略 |
 | **v2.1** | 2025-11-10 | 🆕 新增资金流向数据（moneyflow）<br>🆕 新增市场元数据（创业板标记等）<br>🆕 前复权转换功能<br>🆕 数据质量检查升级（完整度、去重、异常值） |
 | **v2.0** | 2025-10-28 | ⭐ FF5因子优化（OCF+NOA）<br>⭐ 新增数据完整性检查v2.0<br>⭐ 完善文档体系 |
 | v1.1 | 2025-10-27 | 新增数据词典<br>优化数据结构 |
@@ -762,8 +837,8 @@ logging.basicConfig(level=logging.DEBUG)
 
 *Built with ❤️ for Quantitative Research*
 
-**最后更新**: 2025-11-10  
-**数据版本**: v2.1  
+**最后更新**: 2025-11-20  
+**数据版本**: v2.2  
 **项目状态**: ✅ 生产就绪
 
 </div>
