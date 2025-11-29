@@ -193,6 +193,71 @@ class DataStatusChecker:
         
         return status
     
+    def check_financial_tables(self) -> Dict[str, Any]:
+        """检查财务三大表（利润表、资产负债表、现金流量表）"""
+        income_dir = self.data_center_path / "stock" / "financial_tables" / "income"
+        balancesheet_dir = self.data_center_path / "stock" / "financial_tables" / "balancesheet"
+        cashflow_dir = self.data_center_path / "stock" / "financial_tables" / "cashflow"
+        
+        status = {
+            'name': '财务三大表',
+            'path': str(self.data_center_path / "stock" / "financial_tables"),
+            'exists': income_dir.exists() or balancesheet_dir.exists() or cashflow_dir.exists(),
+            'income': {
+                'exists': income_dir.exists(),
+                'file_count': 0,
+                'latest_date': None
+            },
+            'balancesheet': {
+                'exists': balancesheet_dir.exists(),
+                'file_count': 0,
+                'latest_date': None
+            },
+            'cashflow': {
+                'exists': cashflow_dir.exists(),
+                'file_count': 0,
+                'latest_date': None
+            }
+        }
+        
+        # 检查利润表
+        if income_dir.exists():
+            files = list(income_dir.glob("*.parquet"))
+            status['income']['file_count'] = len(files)
+            if files:
+                latest_date = self._get_latest_date_from_dir(income_dir, 'end_date')
+                status['income']['latest_date'] = latest_date
+        
+        # 检查资产负债表
+        if balancesheet_dir.exists():
+            files = list(balancesheet_dir.glob("*.parquet"))
+            status['balancesheet']['file_count'] = len(files)
+            if files:
+                latest_date = self._get_latest_date_from_dir(balancesheet_dir, 'end_date')
+                status['balancesheet']['latest_date'] = latest_date
+        
+        # 检查现金流量表
+        if cashflow_dir.exists():
+            files = list(cashflow_dir.glob("*.parquet"))
+            status['cashflow']['file_count'] = len(files)
+            if files:
+                latest_date = self._get_latest_date_from_dir(cashflow_dir, 'end_date')
+                status['cashflow']['latest_date'] = latest_date
+        
+        # 计算整体最新日期（取三个表中最新的）
+        all_dates = []
+        if status['income']['latest_date']:
+            all_dates.append(status['income']['latest_date'])
+        if status['balancesheet']['latest_date']:
+            all_dates.append(status['balancesheet']['latest_date'])
+        if status['cashflow']['latest_date']:
+            all_dates.append(status['cashflow']['latest_date'])
+        
+        if all_dates:
+            status['latest_date'] = max(all_dates)
+        
+        return status
+    
     def check_index_daily(self) -> Dict[str, Any]:
         """检查指数日K线"""
         dir_path = self.data_center_path / "index" / "daily"
@@ -408,13 +473,16 @@ class DataStatusChecker:
         """检查申万行业数据"""
         daily_path = self.data_center_path / "classification" / "industry_sw" / "sw_l1_daily.parquet"
         member_path = self.data_center_path / "classification" / "industry_sw" / "industry_sw_member.parquet"
+        l3_member_path = self.data_center_path / "classification" / "industry_sw" / "sw_l3_member.parquet"
         
         status = {
             'name': '申万行业数据',
             'path': str(self.data_center_path / "classification" / "industry_sw"),
-            'exists': daily_path.exists() or member_path.exists(),
+            'exists': daily_path.exists() or member_path.exists() or l3_member_path.exists(),
             'daily_latest_date': None,
-            'member_count': 0
+            'member_count': 0,
+            'l3_member_count': 0,
+            'member_latest_date': None  # L2历史映射数据的最新日期（如果有in_date字段）
         }
         
         if daily_path.exists():
@@ -428,6 +496,18 @@ class DataStatusChecker:
             try:
                 df = pd.read_parquet(member_path, engine='pyarrow')
                 status['member_count'] = len(df)
+                # 尝试获取最新日期（如果有in_date字段）
+                if 'in_date' in df.columns:
+                    latest_in_date = df['in_date'].max()
+                    if pd.notna(latest_in_date):
+                        status['member_latest_date'] = str(latest_in_date)
+            except:
+                pass
+        
+        if l3_member_path.exists():
+            try:
+                df = pd.read_parquet(l3_member_path, engine='pyarrow')
+                status['l3_member_count'] = len(df)
             except:
                 pass
         
@@ -1011,7 +1091,7 @@ class DataStatusChecker:
         all_status.append(self.check_stock_cyq_perf())  # 🆕 新增：筹码分布统计
         all_status.append(self.check_daily_basic())
         all_status.append(self.check_fina_indicator())
-        
+        all_status.append(self.check_financial_tables())  # 🆕 新增：财务三大表
         
         # 指数数据
         all_status.append(self.check_index_daily())
@@ -1152,6 +1232,20 @@ class DataStatusChecker:
                     formatted_date = daily_date
                 print(f"   行业指数最新日期: {formatted_date}")
             
+            # 显示申万行业L2历史映射数据详情
+            if name == '申万行业数据':
+                if status.get('member_count', 0) > 0:
+                    print(f"   L2历史映射记录数: {status['member_count']:,} 条")
+                    if status.get('member_latest_date'):
+                        member_date = status['member_latest_date']
+                        if len(member_date) == 8:
+                            formatted_date = f"{member_date[:4]}-{member_date[4:6]}-{member_date[6:8]}"
+                        else:
+                            formatted_date = member_date
+                        print(f"   L2历史映射最新日期: {formatted_date}")
+                if status.get('l3_member_count', 0) > 0:
+                    print(f"   L3成分股记录数: {status['l3_member_count']:,} 条")
+            
             # 显示前复权转换功能详情
             if 'available' in status:
                 if status.get('available'):
@@ -1260,6 +1354,29 @@ class DataStatusChecker:
                         print(f"     - {variety_name}({variety_code}): ❌ 读取失败 - {variety['error']}")
                     else:
                         print(f"     - {variety_name}({variety_code}): ⚠️  数据不存在")
+            
+            # 显示财务三大表详情
+            if name == '财务三大表':
+                print(f"   三大表详情:")
+                tables = [
+                    ('利润表', status.get('income', {})),
+                    ('资产负债表', status.get('balancesheet', {})),
+                    ('现金流量表', status.get('cashflow', {}))
+                ]
+                for table_name, table_info in tables:
+                    if table_info.get('exists'):
+                        file_count = table_info.get('file_count', 0)
+                        latest_date = table_info.get('latest_date')
+                        if latest_date:
+                            if len(latest_date) == 8:
+                                formatted_date = f"{latest_date[:4]}-{latest_date[4:6]}-{latest_date[6:8]}"
+                            else:
+                                formatted_date = latest_date
+                            print(f"     - {table_name}: {file_count:,}个文件, 最新 {formatted_date}")
+                        else:
+                            print(f"     - {table_name}: {file_count:,}个文件, 无日期数据")
+                    else:
+                        print(f"     - {table_name}: ⚠️  数据不存在")
         
         print("\n" + "="*80)
         print("✅ 数据状态检查完成")

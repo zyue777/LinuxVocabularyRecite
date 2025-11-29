@@ -1,6 +1,6 @@
 # A股量化研究数据中心 📊
 
-[![数据版本](https://img.shields.io/badge/数据版本-v2.0-blue.svg)](https://github.com)
+[![数据版本](https://img.shields.io/badge/数据版本-v1.10-blue.svg)](https://github.com)
 [![Python](https://img.shields.io/badge/Python-3.8+-green.svg)](https://www.python.org/)
 [![五因子](https://img.shields.io/badge/五因子-FF5%20v2.0-orange.svg)](https://github.com)
 [![数据源](https://img.shields.io/badge/数据源-Tushare%20Pro-red.svg)](https://tushare.pro)
@@ -32,8 +32,12 @@
 │   ├── download_financial_slow.py   # 财务数据下载（慢速稳定版）
 │   ├── update_bond_yield.py         # 国债收益率增量更新脚本 🆕
 │   ├── build_ff5_factors_monthly_ttm.py  # FF5因子构建脚本 (v2.0)
+│   ├── build_ff3_factors_full_market.py  # FF3因子构建脚本（含金融股）
+│   ├── build_ch3_factors.py        # 中国版三因子构建脚本
+│   ├── build_custom_factors.py      # 自定义因子构建脚本（UMD/LIQ）
 │   ├── check_data_completeness.py   # 数据完整性检查工具 (v2.0)
 │   ├── config.py                    # 全局配置文件
+│   ├── data_utils.py                # 数据处理工具函数
 │   └── daily_update_factors.sh      # 定时更新脚本
 │
 ├── 📚 文档
@@ -51,47 +55,66 @@
 │   └── import_shibor_from_excel.py  # SHIBOR数据导入工具
 │
 └── 💾 quant_data_center/ (数据存储)
-    ├── stock_basic.parquet          # 股票基础信息 (5,444只)
-    ├── stock/
-    │   ├── daily_hfq/              # 日K线-后复权 (5,422只股票)
-    │   ├── hk_daily_hfq/           # 港股行情数据 (New): 日K线（源自 Akshare）
-    │   ├── daily_basic/            # 每日基础指标 (市值、PE/PB)
-    │   ├── moneyflow/              # 资金流向数据 🆕 (5,400+只股票)
-    │   ├── cyq_perf/                # 每日筹码分布统计数据 🆕
-    │   ├── fina_indicator/         # 财务指标 (5,444只)
-    │   └── financial_tables/       # 财务三大表
-    ├── market_metadata/            # 市场元数据 🆕
-    │   ├── chinext_stocks.parquet  # 创业板股票标记
-    │   └── stock_market_map.parquet # 市场分类映射
-    ├── market/                    # 市场数据 🆕
-    │   ├── margin_total/          # 融资融券交易汇总
-    │   ├── margin_detail/         # 融资融券交易明细
-    │   ├── hsgt/                  # 沪深港通资金流向
-    │   └── derivatives/           # 衍生品数据 🆕
-    │       └── futures/           # 期货数据
-    │           └── holding/       # 期货主力合约持仓
-    │               ├── IF_top20.parquet  # 沪深300期指前20名会员持仓
-    │               ├── IC_top20.parquet  # 中证500期指前20名会员持仓
-    │               ├── IM_top20.parquet  # 中证1000期指前20名会员持仓
-    │               └── IH_top20.parquet  # 上证50期指前20名会员持仓
-    ├── stock/
-    │       ├── income/             # 利润表 (5,444只)
-    │       ├── balancesheet/       # 资产负债表 (5,444只)
-    │       └── cashflow/           # 现金流量表 (5,444只) ⭐v2.0核心
-    ├── factors/
-    │   ├── fama_french_5/          # FF5因子 (v2.0优化版) ⭐
-    │   │   └── ff_5_factors_daily.parquet
-    │   ├── macro/                  # 宏观因子 (国债收益率) 🆕
-    │   │   └── china_bond_yield_10y.parquet
-    │   └── risk_free/              # 无风险利率 (SHIBOR)
-    │       └── rfr_daily.parquet
-    ├── index/
-    │   ├── daily/                  # 指数日K线 (沪深300/中证500/创业板)
-    │   ├── daily_basic/            # 指数每日估值 (PE/PB) 🆕
-    │   └── constituents/           # 指数成分股历史数据
-    └── classification/
-        └── industry_sw/            # 申万行业分类
-            └── sw_l1_daily.parquet
+     ├── stock_basic.parquet          # 股票基础信息 (5,452只)
+     ├── stock/                     # 股票数据
+     │   ├── daily_hfq/             # 日K线-后复权 (5,453只股票)
+     │   ├── daily_qfq/             # 日K线-前复权 (5,453只股票) 🆕
+     │   ├── daily_basic/           # 每日基础指标 (市值、PE/PB)
+     │   │   └── daily_basic_all.parquet
+     │   ├── moneyflow/             # 资金流向数据 🆕 (5,367只股票)
+     │   ├── cyq_perf/             # 每日筹码分布统计数据 🆕 (5,452只股票)
+     │   ├── fina_indicator/        # 财务指标 (5,444只)
+     │   └── financial_tables/      # 财务三大表
+     │       ├── income/            # 利润表 (5,445只)
+     │       ├── balancesheet/      # 资产负债表 (5,444只)
+     │       └── cashflow/          # 现金流量表 (5,444只) ⭐v2.0核心
+     ├── stock_hk/                  # 港股数据 🆕
+     │   ├── daily_hfq/            # 港股日K线（后复权）(2,678只)
+     │   └── daily_qfq/            # 港股日K线（前复权）(可实时转换)
+     ├── market_metadata/            # 市场元数据 🆕
+     │   ├── chinext_stocks.parquet # 创业板股票标记
+     │   └── stock_market_map.parquet # 市场分类映射
+     ├── market/                    # 市场数据 🆕
+     │   ├── margin_total/          # 融资融券交易汇总
+     │   │   └── margin_total.parquet
+     │   ├── margin_detail/         # 融资融券交易明细（按日期存储）
+     │   ├── hsgt/                 # 沪深港通资金流向
+     │   │   └── moneyflow_hsgt.parquet
+     │   └── derivatives/           # 衍生品数据 🆕
+     │       └── futures/           # 期货数据
+     │           └── holding/       # 期货主力合约持仓
+     │               ├── IF_top20.parquet  # 沪深300期指前20名会员持仓
+     │               ├── IC_top20.parquet  # 中证500期指前20名会员持仓
+     │               ├── IM_top20.parquet  # 中证1000期指前20名会员持仓
+     │               └── IH_top20.parquet  # 上证50期指前20名会员持仓
+     ├── factors/                   # 因子数据
+     │   ├── fama_french_5/        # FF5因子 (v2.0优化版) ⭐
+     │   │   └── ff_5_factors_daily.parquet
+     │   ├── fama_french_3/        # FF3因子（含金融股）
+     │   │   └── ff_3_factors_daily.parquet
+     │   ├── ch_3_factors/         # 中国版三因子（CH-3）
+     │   │   └── ch_3_factors_daily.parquet
+     │   ├── custom/               # 自定义因子
+     │   │   ├── umd_daily.parquet # UMD动量因子
+     │   │   └── liq_daily.parquet # LIQ流动性因子
+     │   ├── macro/                # 宏观因子 (国债收益率) 🆕
+     │   │   └── china_bond_yield_10y.parquet
+     │   └── risk_free/           # 无风险利率 (SHIBOR)
+     │       └── rfr_daily.parquet
+     ├── index/                     # 指数数据
+     │   ├── daily/                # 指数日K线 (5个指数)
+     │   ├── daily_basic/          # 指数每日估值 (PE/PB) 🆕
+     │   ├── constituents/         # 指数成分股历史数据
+     │   ├── global_daily/         # 全球重要指数日K线 🆕
+     │   └── weight/               # 指数成分股权重
+     ├── classification/            # 分类数据
+     │   └── industry_sw/          # 申万行业分类
+     │       ├── sw_l1_daily.parquet              # 申万行业指数行情
+     │       ├── industry_sw_member.parquet       # 申万二级行业个股历史映射
+     │       └── sw_l3_member.parquet             # 申万行业成分股
+     └── signals/                   # 策略信号数据
+         ├── alpha_strategy_historical_signals.parquet  # Alpha策略历史信号
+         └── alpha_strategy_historical_signals.csv     # Alpha策略历史信号（CSV格式）
 ```
 
 ---
@@ -515,6 +538,136 @@ python check_data_completeness.py
 
 ---
 
+### 10️⃣ Fama-French三因子（含金融股）🆕
+
+**绝对路径**: `quant_data_center/factors/fama_french_3/ff_3_factors_daily.parquet`  
+**用途**: 包含金融股的Fama-French三因子数据，用于全市场资产定价模型
+
+**因子说明**:
+- **MKT_RF**: 市场组合收益率 - 无风险利率
+- **SMB** (Small Minus Big): 小市值组合 - 大市值组合收益率
+- **HML** (High Minus Low): 高账面市值比 - 低账面市值比收益率
+
+**数据特点**:
+- ✅ **包含金融股**: 与FF5因子不同，FF3因子包含金融股，适合全市场研究
+- ✅ **数据范围**: 2013-02-01 至 2025-10-30（3,034条记录）
+- ✅ **月度TTM**: 使用Trailing Twelve Months财务数据，避免未来函数
+
+---
+
+### 11️⃣ 中国版三因子 (CH-3) 🆕
+
+**绝对路径**: `quant_data_center/factors/ch_3_factors/ch_3_factors_daily.parquet`  
+**用途**: 符合A股特性的"中国版三因子"，用于因子回归、风险归因等
+
+**因子说明**:
+- **MKT_RF**: 市场风险溢价 = 市场收益率 - 无风险利率
+- **SMB_CH**: 规模因子（小减大，中国版）
+- **VMG_CH**: 价值因子（价值减成长，中国版）
+
+**核心特性**:
+- ✅ **剔除殼價值**: 剔除市值最小的30%股票，避免殼价值影响
+- ✅ **使用E/P**: 使用盈利收益率 (E/P) 代替账面市值比 (B/M)，更适合A股市场
+- ✅ **数据范围**: 2013-02-01 至 2025-10-30（3,034条记录）
+
+---
+
+### 12️⃣ 自定义因子（UMD动量 & LIQ流动性）🆕
+
+**绝对路径**: 
+- `quant_data_center/factors/custom/umd_daily.parquet` (UMD动量因子)
+- `quant_data_center/factors/custom/liq_daily.parquet` (LIQ流动性因子)
+
+**UMD动量因子**:
+- **用途**: 衡量股票12-1月动量效应，作为v6.0回归模型的"噪音标尺"
+- **计算**: 高动量组合收益 - 低动量组合收益
+- **数据范围**: 2013-02-01 至 2025-10-30（3,034条记录）
+
+**LIQ流动性因子**:
+- **用途**: 衡量股票流动性溢价，作为v6.0回归模型的"噪音标尺"
+- **计算**: 低换手率组合收益 - 高换手率组合收益（流动性溢价）
+- **数据范围**: 2013-02-01 至 2025-10-30（3,034条记录）
+
+---
+
+### 13️⃣ 港股通数据 🆕
+
+**绝对路径**: 
+- `quant_data_center/stock_hk/daily_hfq/{ts_code}.parquet` (后复权)
+- `quant_data_center/stock_hk/daily_qfq/{ts_code}.parquet` (前复权)
+
+**用途**: 港股通个股的日K线数据，支持港股投资研究
+
+**港股通数据**:
+- ✅ **数据源**: 集成 Akshare，支持下载港股通个股的复权（HFQ）日线数据
+- ✅ **数据量**: 2,678个后复权文件（前复权数据可实时转换）
+- ✅ **复权处理**: 提供后复权数据，前复权数据可实时转换
+- ✅ **增量更新**: 支持增量更新，自动从最新日期开始下载
+
+**使用示例**:
+```python
+import pandas as pd
+
+# 读取港股后复权数据
+df_hk_hfq = pd.read_parquet('quant_data_center/stock_hk/daily_hfq/00700.HK.parquet')
+
+# 读取港股前复权数据
+df_hk_qfq = pd.read_parquet('quant_data_center/stock_hk/daily_qfq/00700.HK.parquet')
+
+# 计算收益率
+df_hk_hfq['return'] = df_hk_hfq['close'].pct_change()
+```
+
+---
+
+### 14️⃣ 申万行业分类数据 🆕
+
+**绝对路径**: 
+- `quant_data_center/classification/industry_sw/sw_l1_daily.parquet` (申万行业指数行情)
+- `quant_data_center/classification/industry_sw/industry_sw_member.parquet` (申万二级行业个股历史映射)
+- `quant_data_center/classification/industry_sw/sw_l3_member.parquet` (申万行业成分股)
+
+**申万行业指数行情**:
+- **数据量**: 47,592条记录（2025-10-13 至 2025-11-18）
+- **用途**: 申万行业指数的行情数据（价格、成交量、PE、PB等）
+- **关键字段**: ts_code, trade_date, name, open, high, low, close, pe, pb, float_mv, total_mv
+
+**申万二级行业个股历史映射**:
+- **数据量**: 5,443条记录（5,443只股票的历史申万行业归属）
+- **用途**: 历史上所有申万成分股对应的二级行业代码和名称，以及其划入和划出日期
+- **关键字段**: ts_code, l1_code, l1_name, l2_code, l2_name, l3_code, l3_name, in_date, out_date
+
+**申万行业成分股**:
+- **数据量**: 5,472条记录
+- **用途**: 申万行业指数与成分股的关联关系，用于行业分析、成分股查询等
+- **关键字段**: l3_code, ts_code
+
+**使用示例**:
+```python
+import pandas as pd
+
+# 读取申万行业指数数据
+df_sw_index = pd.read_parquet('quant_data_center/classification/industry_sw/sw_l1_daily.parquet')
+
+# 获取某一天的各行业指数表现
+df_20240101 = df_sw_index[df_sw_index['trade_date'] == '20240101']
+
+# 查看涨幅前5的行业
+top_industries = df_20240101.nlargest(5, 'pct_change')[['name', 'pct_change', 'pe', 'pb']]
+
+# 读取申万L2历史映射数据
+df_member = pd.read_parquet('quant_data_center/classification/industry_sw/industry_sw_member.parquet')
+
+# 查询某个申万二级行业的所有成分股（当前仍在该行业）
+l2_code = '801783.SI'  # 股份制银行Ⅱ
+current_stocks = df_member[
+    (df_member['l2_code'] == l2_code) & 
+    (df_member['out_date'].isna())
+]['ts_code'].tolist()
+```
+
+---
+
 ## 📖 使用示例
 
 ### 示例1: 读取FF5因子并进行回归
@@ -738,21 +891,54 @@ RETRY_TIMES = 3   # 失败重试次数
 
 | 数据类型 | 数量 | 存储大小（约） |
 |---------|------|--------------|
-| 股票基础信息 | 5,444只 | 1 MB |
-| 股票日K线 | 5,422只×3,000天 | 2 GB |
-| 每日基础指标 | 1,700万条 | 500 MB |
+| 股票基础信息 | 5,452只 | 1 MB |
+| 股票日K线（后复权） | 5,453只×3,000天 | 2 GB |
+| 股票日K线（前复权） | 5,453只×3,000天 | 2 GB |
+| 每日基础指标 | 1,705万条 | 500 MB |
 | 财务三大表 | 5,444只×3表×60季 | 800 MB |
 | 财务指标 | 5,444只×100指标 | 200 MB |
-| FF5因子 | 3,094天 | < 1 MB |
-| 指数数据 | 4个×3,800天 | 10 MB |
-| **总计** | - | **约3.5 GB** |
+| FF5因子 | 3,096天 | < 1 MB |
+| FF3因子（含金融股） | 3,034天 | < 1 MB |
+| 中国版三因子(CH-3) | 3,034天 | < 1 MB |
+| UMD动量因子 | 3,034天 | < 1 MB |
+| LIQ流动性因子 | 3,034天 | < 1 MB |
+| 指数数据 | 5个×3,800天 | 10 MB |
+| 指数每日估值(PE/PB) | 4个指数 | < 1 MB |
+| 全球指数数据 | 3个指数 | < 1 MB |
+| 申万行业数据**: 
+  - 申万行业指数: 47,592条记录
+  - 申万L2历史映射: 5,443条记录
+  - 申万L3成分股: 5,472条记录
+| 资金流向数据 | 5,367个文件 | 500 MB |
+| 每日筹码分布统计 | 5,452个文件 | 1 GB |
+| 融资融券交易汇总 | 1,667条记录 | < 1 MB |
+| 融资融券交易明细 | 3,799个文件 | 2 GB |
+| 沪深港通资金流向 | 341条记录 | < 1 MB |
+| CFFEX期货持仓数据 | 4个品种 | 100 MB |
+| 港股日K线数据 | 2,678个文件 | 500 MB |
+| 无风险利率 | 3,857条记录 | < 1 MB |
+| 国债收益率 | 3,972条记录 | < 1 MB |
+| **总计** | - | **约10 GB** |
 
 ### 数据覆盖范围
 
 - **时间跨度**: 2010-01-01 至今
-- **港股数据支持**: 集成 Akshare，支持下载港股通个股的复权（HFQ）日线数据。
+- **股票数据**: 5,452只A股，2,678只港股通
+- **港股数据支持**: 集成 Akshare，支持下载港股通个股的复权（HFQ）日线数据，2,678只股票
 - **财务数据**: 2006年至今（部分股票）
-- **因子数据**: 2012-11-01 至今
+- **因子数据**: 
+  - FF5因子: 2012-11-01 至今
+  - FF3因子: 2013-02-01 至今
+  - 中国版三因子: 2013-02-01 至今
+  - 自定义因子(UMD/LIQ): 2013-02-01 至今
+- **市场数据**: 
+  - 融资融券汇总: 2019-01-08 至今（1,667条记录）
+  - 融资融券明细: 2010-03-31 至今（3,799个文件）
+  - 沪深港通: 2018-01-25 至 2024-08-16（341条记录）
+  - 期货持仓: 2016-01-04 至今（4个品种）
+- **指数数据**: 1993-01-11 至今（上证指数）
+- **无风险利率**: 2010-01-25 至今
+- **国债收益率**: 2010-01-04 至今
 
 ---
 
@@ -887,6 +1073,7 @@ logging.basicConfig(level=logging.DEBUG)
 
 | 版本 | 日期 | 主要更新 |
 |------|------|---------|
+| **v1.10** | 2025-11-22 | 🆕 新增股票每日筹码分布统计数据（cyq_perf）<br>🆕 包含成本分位数、加权平均成本、获利比例等核心指标<br>🆕 支持筹码分析、压力支撑判断、情绪指标构建等应用场景<br>🆕 优化采样检查逻辑（均匀间隔采样，覆盖整个列表） |
 | **v2.3** | 2025-11-22 | 🆕 新增股票每日筹码分布统计数据（cyq_perf）<br>🆕 包含成本分位数、加权平均成本、获利比例等核心指标<br>🆕 支持筹码分析、压力支撑判断、情绪指标构建等应用场景<br>🆕 优化采样检查逻辑（均匀间隔采样，覆盖整个列表） |
 | **v2.2** | 2025-11-20 | 🆕 新增CFFEX期货主力合约前20名会员持仓数据<br>🆕 支持IF、IC、IM、IH四个期指品种<br>🆕 自动跟踪每日主力合约，确保数据连续性<br>🆕 用于构建"情绪面"多空比指标，支持期指择时策略 |
 | **v2.1** | 2025-11-10 | 🆕 新增资金流向数据（moneyflow）<br>🆕 新增市场元数据（创业板标记等）<br>🆕 前复权转换功能<br>🆕 数据质量检查升级（完整度、去重、异常值） |
@@ -922,7 +1109,7 @@ logging.basicConfig(level=logging.DEBUG)
 *Built with ❤️ for Quantitative Research*
 
 **最后更新**: 2025-11-22  
-**数据版本**: v2.3  
+**数据版本**: v1.10  
 **项目状态**: ✅ 生产就绪
 
 </div>
