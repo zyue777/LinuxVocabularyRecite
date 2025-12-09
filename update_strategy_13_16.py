@@ -32,19 +32,22 @@ def main():
         print(f"❌ 数据管理器初始化失败: {e}")
         return 1
     
-    # 解析命令行参数
+    # 解析命令行参数：如果未提供参数，默认执行 'all'
     if len(sys.argv) < 2:
-        print("\n📋 使用方法:")
-        print("  python update_strategy_13_16.py [选项]")
-        print("\n📋 可用选项:")
-        print("  13 - 更新港股通个股日K线数据")
-        print("  14 - 更新四维择时策略所需数据（指数估值PE/PB + 国债收益率）")
-        print("  15 - 更新CFFEX期货主力合约前20名会员持仓数据")
-        print("  16 - 更新股票每日筹码分布统计数据")
-        print("  all - 更新所有策略数据（13-16）")
-        return 0
-    
-    option = sys.argv[1]
+        option = 'all'
+        print("\nℹ️ 未提供选项，默认执行 'all'（更新所有策略数据）")
+    else:
+        option = sys.argv[1]
+        if option in ('-h', '--help'):
+            print("\n📋 使用方法:")
+            print("  python update_strategy_13_16.py [选项]")
+            print("\n📋 可用选项:")
+            print("  13 - 更新港股通个股日K线数据")
+            print("  14 - 更新四维择时策略所需数据（指数估值PE/PB + 国债收益率）")
+            print("  15 - 更新CFFEX期货主力合约前20名会员持仓数据")
+            print("  16 - 更新股票每日筹码分布统计数据")
+            print("  all - 更新所有策略数据（13-16）")
+            return 0
     
     # 执行对应的更新
     try:
