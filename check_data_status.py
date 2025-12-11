@@ -1076,6 +1076,193 @@ class DataStatusChecker:
         
         return status
     
+    def check_hk_stock_info(self) -> Dict[str, Any]:
+        """检查港股基础信息"""
+        file_path = self.data_center_path / "hk_stock_info_cache.parquet"
+        
+        status = {
+            'name': '港股基础信息',
+            'path': str(file_path),
+            'exists': file_path.exists(),
+            'latest_date': None,
+            'count': 0
+        }
+        
+        if file_path.exists():
+            try:
+                # 港股基础信息通常没有日期字段，或使用list_date
+                df = pd.read_parquet(file_path, engine='pyarrow')
+                status['count'] = len(df)
+                status['latest_date'] = datetime.fromtimestamp(file_path.stat().st_mtime).strftime('%Y-%m-%d %H:%M:%S')
+            except:
+                pass
+        
+        return status
+
+    def check_hk_stock_daily_qfq(self) -> Dict[str, Any]:
+        """检查港股通个股日K线（前复权）"""
+        dir_path = self.data_center_path / "stock_hk" / "daily_qfq"
+        
+        status = {
+            'name': '港股通日K线(前复权)',
+            'path': str(dir_path),
+            'exists': dir_path.exists(),
+            'latest_date': None,
+            'file_count': 0,
+            'sample_stocks': []
+        }
+        
+        if dir_path.exists():
+            files = list(dir_path.glob("*.parquet"))
+            status['file_count'] = len(files)
+            
+            if files:
+                latest_dates = []
+                # 采样检查前5只股票
+                sample_files = files[:5]
+                for file_path in sample_files:
+                    try:
+                        latest_date = self._get_latest_date(file_path, 'trade_date')
+                        if latest_date:
+                            latest_dates.append(latest_date)
+                            stock_code = file_path.stem
+                            status['sample_stocks'].append({
+                                'code': stock_code,
+                                'latest_date': latest_date
+                            })
+                    except:
+                        continue
+                
+                if latest_dates:
+                    status['latest_date'] = max(latest_dates)
+        
+        return status
+
+    def check_market_metadata(self) -> Dict[str, Any]:
+        """检查市场元数据（创业板列表、市场映射表）"""
+        dir_path = self.data_center_path / "market_metadata"
+        
+        status = {
+            'name': '市场元数据',
+            'path': str(dir_path),
+            'exists': dir_path.exists(),
+            'files': []
+        }
+        
+        if dir_path.exists():
+            files = list(dir_path.glob("*.parquet"))
+            for file_path in files:
+                file_info = {
+                    'name': file_path.name,
+                    'count': 0,
+                    'latest_date': datetime.fromtimestamp(file_path.stat().st_mtime).strftime('%Y-%m-%d %H:%M:%S')
+                }
+                try:
+                    df = pd.read_parquet(file_path, engine='pyarrow')
+                    file_info['count'] = len(df)
+                except:
+                    pass
+                status['files'].append(file_info)
+        
+        return status
+
+    def check_signals(self) -> Dict[str, Any]:
+        """检查策略信号数据"""
+        dir_path = self.data_center_path / "signals"
+        
+        status = {
+            'name': '策略信号数据',
+            'path': str(dir_path),
+            'exists': dir_path.exists(),
+            'latest_date': None,
+            'file_count': 0,
+            'files': []
+        }
+        
+        if dir_path.exists():
+            files = list(dir_path.glob("*.parquet")) or list(dir_path.glob("*.csv"))
+            status['file_count'] = len(files)
+            latest_dates = []
+            
+            for file_path in files:
+                file_info = {
+                    'name': file_path.name,
+                    'count': 0,
+                    'latest_date': None
+                }
+                try:
+                    if file_path.suffix == '.parquet':
+                        df = pd.read_parquet(file_path, engine='pyarrow')
+                        # 尝试读取trade_date 或 date
+                        if 'trade_date' in df.columns:
+                            latest_date = df['trade_date'].max()
+                        elif 'date' in df.columns:
+                            latest_date = df['date'].max()
+                        else:
+                            latest_date = datetime.fromtimestamp(file_path.stat().st_mtime).strftime('%Y-%m-%d %H:%M:%S')
+                        
+                        file_info['latest_date'] = str(latest_date)
+                        latest_dates.append(str(latest_date))
+                        file_info['count'] = len(df)
+                    
+                    elif file_path.suffix == '.csv':
+                        # 简单读取CSV行数
+                        with open(file_path, 'r') as f:
+                            file_info['count'] = sum(1 for _ in f) - 1 # 减去header
+                        file_info['latest_date'] = datetime.fromtimestamp(file_path.stat().st_mtime).strftime('%Y-%m-%d %H:%M:%S')
+                except:
+                    pass
+                status['files'].append(file_info)
+            
+            if latest_dates:
+                status['latest_date'] = max(latest_dates)
+        
+        return status
+
+    def check_tdx_industry(self) -> Dict[str, Any]:
+        """检查通达信行业数据"""
+        dir_path = self.data_center_path / "classification" / "industry_tdx"
+        
+        status = {
+            'name': '通达信行业数据',
+            'path': str(dir_path),
+            'exists': dir_path.exists(),
+            'file_count': 0,
+            'latest_date': None 
+        }
+        
+        if dir_path.exists():
+            files = list(dir_path.glob("*.parquet"))
+            status['file_count'] = len(files)
+            if files:
+                 latest_date = self._get_latest_date_from_dir(dir_path, 'trade_date')
+                 status['latest_date'] = latest_date
+
+        return status
+
+    def check_annual_reports(self) -> Dict[str, Any]:
+        """检查年报PDF存档"""
+        dir_path = self.data_center_path / "annual_reports"
+        
+        status = {
+            'name': '年报PDF存档',
+            'path': str(dir_path),
+            'exists': dir_path.exists(),
+            'company_count': 0,
+            'file_count': 0
+        }
+        
+        if dir_path.exists():
+            companies = [d for d in dir_path.iterdir() if d.is_dir()]
+            status['company_count'] = len(companies)
+            
+            pdf_count = 0
+            for company_dir in companies:
+                pdf_count += len(list(company_dir.glob("*.pdf")))
+            status['file_count'] = pdf_count
+        
+        return status
+    
     def check_all(self) -> List[Dict[str, Any]]:
         """检查所有数据状态"""
         print("\n" + "="*80)
@@ -1100,7 +1287,9 @@ class DataStatusChecker:
         all_status.append(self.check_index_constituents())
         
         # 港股数据 🆕 新增
+        all_status.append(self.check_hk_stock_info())
         all_status.append(self.check_hk_stock_daily())
+        all_status.append(self.check_hk_stock_daily_qfq())
         
         # 因子数据
         all_status.append(self.check_risk_free_rate())
@@ -1109,15 +1298,21 @@ class DataStatusChecker:
         all_status.append(self.check_ff5_factors())
         all_status.append(self.check_ch3_factors())
         all_status.append(self.check_custom_factors())
+        all_status.append(self.check_signals())     # 🆕 新增：策略信号
         
         # 分类数据
         all_status.append(self.check_sw_industry())
+        all_status.append(self.check_tdx_industry()) # 🆕 新增：通达信行业
         
         # 市场数据 🆕 新增
         all_status.append(self.check_margin_total())
         all_status.append(self.check_margin_detail())
         all_status.append(self.check_moneyflow_hsgt())
         all_status.append(self.check_future_holdings())  # 🆕 新增：期货持仓数据
+        all_status.append(self.check_market_metadata())  # 🆕 新增：市场元数据
+        
+        # 文档数据
+        all_status.append(self.check_annual_reports())   # 🆕 新增：年报存档
         
         # 前复权转换功能 🆕 新增
         all_status.append(self.check_qfq_conversion())
@@ -1377,6 +1572,26 @@ class DataStatusChecker:
                             print(f"     - {table_name}: {file_count:,}个文件, 无日期数据")
                     else:
                         print(f"     - {table_name}: ⚠️  数据不存在")
+            
+            # 显示市场元数据详情
+            if name == '市场元数据' and 'files' in status and status['files']:
+                print(f"   文件列表:")
+                for f in status['files']:
+                    print(f"     - {f['name']}: {f['count']:,} 条, 最新 {f['latest_date']}")
+            
+            # 显示策略信号数据详情
+            if name == '策略信号数据' and 'files' in status and status['files']:
+                print(f"   文件列表:")
+                for f in status['files']:
+                    date_info = f", 最新 {f['latest_date']}" if f['latest_date'] else ""
+                    print(f"     - {f['name']}: {f['count']:,} 条{date_info}")
+            
+            # 显示年报存档详情
+            if name == '年报PDF存档':
+                if status.get('company_count', 0) > 0:
+                    print(f"   已收录公司: {status['company_count']:,} 家")
+                if status.get('file_count', 0) > 0:
+                    print(f"   PDF文件总数: {status['file_count']:,} 个")
         
         print("\n" + "="*80)
         print("✅ 数据状态检查完成")
@@ -1441,12 +1656,16 @@ class DataStatusChecker:
             ('股票日K线(后复权)', ['股票日K线', '后复权']),
             ('股票资金流向', ['股票资金流向']),
             ('股票每日筹码分布统计', ['股票每日筹码分布统计']),
-            ('港股通日K线(后复权)', ['港股通', '后复权']),
+            ('港股基础信息', ['港股基础信息']),
+            ('港股通日K线(后复权)', ['港股通日K线', '后复权']),
+            ('港股通日K线(前复权)', ['港股通日K线', '前复权']),
             ('指数日K线', ['指数日K线']),
             ('全球重要指数日K线', ['全球重要指数']),
             ('股票每日基础指标', ['股票每日基础指标']),
             ('无风险利率', ['无风险利率']),
             ('CFFEX期货主力合约持仓', ['CFFEX期货', '主力合约持仓']),
+            ('通达信行业数据', ['通达信行业数据']),
+            ('策略信号数据', ['策略信号数据']),
         ]
         
         for display_name, keywords in core_data:

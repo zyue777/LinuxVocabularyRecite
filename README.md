@@ -1,6 +1,6 @@
 # A股量化研究数据中心 📊
 
-[![数据版本](https://img.shields.io/badge/数据版本-v1.10-blue.svg)](https://github.com)
+[![数据版本](https://img.shields.io/badge/数据版本-v1.11-blue.svg)](https://github.com)
 [![Python](https://img.shields.io/badge/Python-3.8+-green.svg)](https://www.python.org/)
 [![五因子](https://img.shields.io/badge/五因子-FF5%20v2.0-orange.svg)](https://github.com)
 [![数据源](https://img.shields.io/badge/数据源-Tushare%20Pro-red.svg)](https://tushare.pro)
@@ -11,15 +11,18 @@
 
 **核心特性**:
 - ✅ **FF5 v2.0优化版**: 使用经营现金流(OCF)和经营性净资产(NOA)优化RMW和CMA因子
-- ✅ **完整数据体系**: 5,400+只股票，15年+历史数据
+- ✅ **完整数据体系**: 5,459只股票，15年+历史数据
 - ✅ **高效存储**: Parquet列式存储，查询速度快
 - ✅ **增量更新**: 智能检测，只下载新数据
 - ✅ **开箱即用**: 配置简单，文档完善
 - 🆕 **资金流向数据**: 个股资金流向（小单、中单、大单、特大单）
+- 🆕 **筹码分布数据**: 每日筹码分布统计（成本分位数、获利比例）
 - 🆕 **市场元数据**: 创业板、科创板等市场分类快速筛选
 - 🆕 **前复权转换**: 实时转换后复权为前复权，无需额外存储
 - 🆕 **数据质量保障**: 完整度检查、去重、异常值检测
 - 🆕 **期货持仓数据**: CFFEX期指主力合约前20名会员持仓，支持情绪面多空比分析
+
+> 📖 **新手？** 请先阅读 [快速开始指南 (QUICK_START.md)](QUICK_START.md)，了解每个下载程序的功能和使用方法！
 
 ---
 
@@ -42,6 +45,7 @@
 │
 ├── 📚 文档
 │   ├── README.md                    # 本文件
+│   ├── QUICK_START.md               # 快速开始指南 🆕
 │   ├── 数据词典.md                   # 数据结构详细说明
 │   ├── 五因子构建方法详解.md          # FF5构建方法（v2.0）
 │   ├── FF5_v2.0_更新说明.md          # v2.0版本更新说明
@@ -57,19 +61,19 @@
 └── 💾 quant_data_center/ (数据存储)
      ├── stock_basic.parquet          # 股票基础信息 (5,452只)
      ├── stock/                     # 股票数据
-     │   ├── daily_hfq/             # 日K线-后复权 (5,453只股票)
-     │   ├── daily_qfq/             # 日K线-前复权 (5,453只股票) 🆕
+     │   ├── daily_hfq/             # 日K线-后复权 (5,459只股票)
+     │   ├── daily_qfq/             # 日K线-前复权 (5,459只股票) 🆕
      │   ├── daily_basic/           # 每日基础指标 (市值、PE/PB)
      │   │   └── daily_basic_all.parquet
-     │   ├── moneyflow/             # 资金流向数据 🆕 (5,367只股票)
-     │   ├── cyq_perf/             # 每日筹码分布统计数据 🆕 (5,452只股票)
+     │   ├── moneyflow/             # 资金流向数据 🆕 (5,370只股票)
+     │   ├── cyq_perf/             # 每日筹码分布统计数据 🆕 (5,457只股票)
      │   ├── fina_indicator/        # 财务指标 (5,444只)
      │   └── financial_tables/      # 财务三大表
      │       ├── income/            # 利润表 (5,445只)
      │       ├── balancesheet/      # 资产负债表 (5,444只)
      │       └── cashflow/          # 现金流量表 (5,444只) ⭐v2.0核心
      ├── stock_hk/                  # 港股数据 🆕
-     │   ├── daily_hfq/            # 港股日K线（后复权）(2,678只)
+     │   ├── daily_hfq/            # 港股日K线（后复权）(2,686只)
      │   └── daily_qfq/            # 港股日K线（前复权）(可实时转换)
      ├── market_metadata/            # 市场元数据 🆕
      │   ├── chinext_stocks.parquet # 创业板股票标记
