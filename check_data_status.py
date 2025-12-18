@@ -1861,7 +1861,7 @@ class DataStatusChecker:
                         
                         df['trade_date'] = pd.to_datetime(df['trade_date'], format='%Y%m%d')
                         df = df.sort_values('trade_date')
-                        df['trade_date_str'] = df['trade_date'].dt.strftime('%Y%m%d')
+                        df['trade_date_str'] = df['trade_date'].dt.strftime('%Y%m%d')  # type: ignore
                         
                         # 获取数据日期范围
                         min_date = df['trade_date'].min()
@@ -1915,7 +1915,7 @@ class DataStatusChecker:
                                     })
                         else:
                             # 简化检查：计算日期差，但只标记大于10天的间隔（可能是数据断层）
-                            date_diffs = df['trade_date'].diff().dt.days
+                            date_diffs = df['trade_date'].diff().dt.days  # type: ignore
                             large_gaps = date_diffs[date_diffs > 10]  # 大于10天可能是数据断层
                             
                             if len(large_gaps) > 0:
