@@ -2,15 +2,13 @@
 
 [![数据版本](https://img.shields.io/badge/数据版本-v1.11-blue.svg)](https://github.com)
 [![Python](https://img.shields.io/badge/Python-3.8+-green.svg)](https://www.python.org/)
-[![五因子](https://img.shields.io/badge/五因子-FF5%20v2.0-orange.svg)](https://github.com)
 [![数据源](https://img.shields.io/badge/数据源-Tushare%20Pro-red.svg)](https://tushare.pro)
 
 ## 🎯 项目概述
 
-这是一个专为A股量化研究设计的**专业级本地数据中心**，支持**Fama-French五因子模型(v2.0优化版)**、残差动量、多因子策略等高阶量化研究。
+这是一个专为A股量化研究设计的**专业级本地数据中心**，提供完整的股票、财务、指数、市场数据支持。
 
 **核心特性**:
-- ✅ **FF5 v2.0优化版**: 使用经营现金流(OCF)和经营性净资产(NOA)优化RMW和CMA因子
 - ✅ **完整数据体系**: 5,459只股票，15年+历史数据
 - ✅ **高效存储**: Parquet列式存储，查询速度快
 - ✅ **增量更新**: 智能检测，只下载新数据
@@ -34,29 +32,20 @@
 │   ├── download_data_manager.py     # 数据下载管理器（主程序）
 │   ├── download_financial_slow.py   # 财务数据下载（慢速稳定版）
 │   ├── update_bond_yield.py         # 国债收益率增量更新脚本 🆕
-│   ├── build_ff5_factors_monthly_ttm.py  # FF5因子构建脚本 (v2.0)
-│   ├── build_ff3_factors_full_market.py  # FF3因子构建脚本（含金融股）
-│   ├── build_ch3_factors.py        # 中国版三因子构建脚本
-│   ├── build_custom_factors.py      # 自定义因子构建脚本（UMD/LIQ）
 │   ├── check_data_completeness.py   # 数据完整性检查工具 (v2.0)
 │   ├── config.py                    # 全局配置文件
-│   ├── data_utils.py                # 数据处理工具函数
-│   └── daily_update_factors.sh      # 定时更新脚本
+│   └── data_utils.py                # 数据处理工具函数
 │
 ├── 📚 文档
 │   ├── README.md                    # 本文件
 │   ├── QUICK_START.md               # 快速开始指南 🆕
 │   ├── 数据词典.md                   # 数据结构详细说明
-│   ├── 五因子构建方法详解.md          # FF5构建方法（v2.0）
-│   ├── FF5_v2.0_更新说明.md          # v2.0版本更新说明
-│   └── 银行股与FF5因子影响分析.md     # 银行股数据分析
+│   └── DEPRECATED_FACTORS.md        # 因子功能废弃说明 🆕
 │
 ├── 🗂️ others/ (辅助工具)
 │   ├── data_config_example.py       # 配置文件模板
 │   ├── example_usage.py             # 使用示例代码
-│   ├── validate_ff5_model.py        # FF5模型验证工具
-│   ├── view_parquet.py              # Parquet文件查看器
-│   └── import_shibor_from_excel.py  # SHIBOR数据导入工具
+│   └── view_parquet.py              # Parquet文件查看器
 │
 └── 💾 quant_data_center/ (数据存储)
      ├── stock_basic.parquet          # 股票基础信息 (5,452只)
@@ -71,7 +60,7 @@
      │   └── financial_tables/      # 财务三大表
      │       ├── income/            # 利润表 (5,445只)
      │       ├── balancesheet/      # 资产负债表 (5,444只)
-     │       └── cashflow/          # 现金流量表 (5,444只) ⭐v2.0核心
+     │       └── cashflow/          # 现金流量表 (5,444只)
      ├── stock_hk/                  # 港股数据 🆕
      │   ├── daily_hfq/            # 港股日K线（后复权）(2,686只)
      │   └── daily_qfq/            # 港股日K线（前复权）(可实时转换)
@@ -91,16 +80,7 @@
      │               ├── IC_top20.parquet  # 中证500期指前20名会员持仓
      │               ├── IM_top20.parquet  # 中证1000期指前20名会员持仓
      │               └── IH_top20.parquet  # 上证50期指前20名会员持仓
-     ├── factors/                   # 因子数据
-     │   ├── fama_french_5/        # FF5因子 (v2.0优化版) ⭐
-     │   │   └── ff_5_factors_daily.parquet
-     │   ├── fama_french_3/        # FF3因子（含金融股）
-     │   │   └── ff_3_factors_daily.parquet
-     │   ├── ch_3_factors/         # 中国版三因子（CH-3）
-     │   │   └── ch_3_factors_daily.parquet
-     │   ├── custom/               # 自定义因子
-     │   │   ├── umd_daily.parquet # UMD动量因子
-     │   │   └── liq_daily.parquet # LIQ流动性因子
+     ├── factors/                   # 因子数据（⚠️ 部分已剥离）
      │   ├── macro/                # 宏观因子 (国债收益率) 🆕
      │   │   └── china_bond_yield_10y.parquet
      │   └── risk_free/           # 无风险利率 (SHIBOR)
@@ -192,27 +172,7 @@ python build_ff5_factors_monthly_ttm.py
 
 ## 💡 核心功能
 
-### 1️⃣ Fama-French五因子模型 (v2.0优化版) ⭐
-
-**v2.0核心优化**:
-- **RMW因子**: 使用**经营现金流(OCF)**替代营业利润，更准确衡量盈利质量
-- **CMA因子**: 使用**经营性净资产(NOA)**替代总资产，更精确捕捉真实投资
-
-| 因子 | 名称 | v2.0计算方法 | 用途 |
-|------|------|-------------|------|
-| **MKT_RF** | 市场风险溢价 | 市场收益 - 无风险利率 | 市场整体风险 |
-| **SMB** | 规模因子 | 小市值 - 大市值 | Size效应 |
-| **HML** | 价值因子 | 高B/M - 低B/M | Value效应 |
-| **RMW** | 盈利质量因子 | 高OCF/B - 低OCF/B | ⭐现金流质量 |
-| **CMA** | 投资因子 | 保守NOA - 激进NOA | ⭐真实投资 |
-
-**数据范围**: 2012-11-01 至今  
-**调仓频率**: 月度  
-**详细文档**: 见 [五因子构建方法详解.md](五因子构建方法详解.md)
-
----
-
-### 2️⃣ 完整的股票数据体系
+### 1️⃣ 完整的股票数据体系
 
 #### A. 股票日K线（后复权）
 - **数量**: 5,422只股票
@@ -223,7 +183,7 @@ python build_ff5_factors_monthly_ttm.py
 #### B. 财务三大表（季度数据）
 - **利润表** (income): 营业收入、净利润等
 - **资产负债表** (balancesheet): 总资产、净资产等
-- **现金流量表** (cashflow): 经营现金流 ⭐v2.0核心
+- **现金流量表** (cashflow): 经营现金流
 
 **数据特点**:
 - ✅ 严格使用`ann_date`（公告日期），避免未来函数
@@ -542,59 +502,7 @@ python check_data_completeness.py
 
 ---
 
-### 10️⃣ Fama-French三因子（含金融股）🆕
-
-**绝对路径**: `quant_data_center/factors/fama_french_3/ff_3_factors_daily.parquet`  
-**用途**: 包含金融股的Fama-French三因子数据，用于全市场资产定价模型
-
-**因子说明**:
-- **MKT_RF**: 市场组合收益率 - 无风险利率
-- **SMB** (Small Minus Big): 小市值组合 - 大市值组合收益率
-- **HML** (High Minus Low): 高账面市值比 - 低账面市值比收益率
-
-**数据特点**:
-- ✅ **包含金融股**: 与FF5因子不同，FF3因子包含金融股，适合全市场研究
-- ✅ **数据范围**: 2013-02-01 至 2025-10-30（3,034条记录）
-- ✅ **月度TTM**: 使用Trailing Twelve Months财务数据，避免未来函数
-
----
-
-### 11️⃣ 中国版三因子 (CH-3) 🆕
-
-**绝对路径**: `quant_data_center/factors/ch_3_factors/ch_3_factors_daily.parquet`  
-**用途**: 符合A股特性的"中国版三因子"，用于因子回归、风险归因等
-
-**因子说明**:
-- **MKT_RF**: 市场风险溢价 = 市场收益率 - 无风险利率
-- **SMB_CH**: 规模因子（小减大，中国版）
-- **VMG_CH**: 价值因子（价值减成长，中国版）
-
-**核心特性**:
-- ✅ **剔除殼價值**: 剔除市值最小的30%股票，避免殼价值影响
-- ✅ **使用E/P**: 使用盈利收益率 (E/P) 代替账面市值比 (B/M)，更适合A股市场
-- ✅ **数据范围**: 2013-02-01 至 2025-10-30（3,034条记录）
-
----
-
-### 12️⃣ 自定义因子（UMD动量 & LIQ流动性）🆕
-
-**绝对路径**: 
-- `quant_data_center/factors/custom/umd_daily.parquet` (UMD动量因子)
-- `quant_data_center/factors/custom/liq_daily.parquet` (LIQ流动性因子)
-
-**UMD动量因子**:
-- **用途**: 衡量股票12-1月动量效应，作为v6.0回归模型的"噪音标尺"
-- **计算**: 高动量组合收益 - 低动量组合收益
-- **数据范围**: 2013-02-01 至 2025-10-30（3,034条记录）
-
-**LIQ流动性因子**:
-- **用途**: 衡量股票流动性溢价，作为v6.0回归模型的"噪音标尺"
-- **计算**: 低换手率组合收益 - 高换手率组合收益（流动性溢价）
-- **数据范围**: 2013-02-01 至 2025-10-30（3,034条记录）
-
----
-
-### 13️⃣ 港股通数据 🆕
+### 10️⃣ 港股通数据 🆕
 
 **绝对路径**: 
 - `quant_data_center/stock_hk/daily_hfq/{ts_code}.parquet` (后复权)
@@ -624,7 +532,7 @@ df_hk_hfq['return'] = df_hk_hfq['close'].pct_change()
 
 ---
 
-### 14️⃣ 申万行业分类数据 🆕
+### 11️⃣ 申万行业分类数据 🆕
 
 **绝对路径**: 
 - `quant_data_center/classification/industry_sw/sw_l1_daily.parquet` (申万行业指数行情)
@@ -674,44 +582,7 @@ current_stocks = df_member[
 
 ## 📖 使用示例
 
-### 示例1: 读取FF5因子并进行回归
-
-```python
-import pandas as pd
-import numpy as np
-from sklearn.linear_model import LinearRegression
-
-# 数据中心路径
-DATA_CENTER = '/home/zy/桌面/数据中心/quant_data_center'
-
-# 1. 读取FF5因子 (v2.0)
-df_ff5 = pd.read_parquet(f'{DATA_CENTER}/factors/fama_french_5/ff_5_factors_daily.parquet')
-
-# 2. 读取股票收益率
-df_stock = pd.read_parquet(f'{DATA_CENTER}/stock/daily_hfq/000001.SZ.parquet')
-df_stock['return'] = df_stock['close'].pct_change() * 100  # 转为%
-
-# 3. 合并数据
-df = df_stock.merge(df_ff5, on='trade_date', how='inner')
-
-# 4. FF5回归
-X = df[['MKT_RF', 'SMB', 'HML', 'RMW', 'CMA']].values
-y = (df['return'] - df_ff5['MKT_RF']).values  # 超额收益
-
-model = LinearRegression()
-model.fit(X, y)
-
-print(f"Alpha (年化): {model.intercept_ * 252:.2f}%")
-print(f"Beta (MKT): {model.coef_[0]:.3f}")
-print(f"Beta (SMB): {model.coef_[1]:.3f}")
-print(f"Beta (HML): {model.coef_[2]:.3f}")
-print(f"Beta (RMW): {model.coef_[3]:.3f}")  # v2.0: 现金流质量
-print(f"Beta (CMA): {model.coef_[4]:.3f}")  # v2.0: 投资因子
-```
-
----
-
-### 示例2: 构建股票池
+### 示例1: 构建股票池
 
 ```python
 import pandas as pd
@@ -747,7 +618,7 @@ print(f"股票池规模: {len(stock_pool)} 只")
 
 ---
 
-### 示例3: 计算残差动量
+### 示例2: 分析资金流向
 
 ```python
 import pandas as pd
@@ -831,10 +702,9 @@ python build_ff5_factors_monthly_ttm.py
 | 文档 | 说明 | 适合人群 |
 |------|------|---------|
 | [README.md](README.md) | 项目总览（本文件） | 所有用户 |
+| [QUICK_START.md](QUICK_START.md) | 快速开始指南 | 新手用户 |
 | [数据词典.md](数据词典.md) | 数据结构详细说明 | 开发者 |
-| [五因子构建方法详解.md](五因子构建方法详解.md) | FF5构建方法（v2.0） | 研究员 |
-| [FF5_v2.0_更新说明.md](FF5_v2.0_更新说明.md) | v2.0版本更新日志 | 所有用户 |
-| [银行股与FF5因子影响分析.md](银行股与FF5因子影响分析.md) | 银行股数据分析 | 研究员 |
+| [DEPRECATED_FACTORS.md](DEPRECATED_FACTORS.md) | 因子功能废弃说明 | 所有用户 |
 
 ---
 
@@ -850,13 +720,6 @@ cp others/data_config_example.py your_project/data_config.py
 # 在项目中使用
 import data_config
 df = pd.read_parquet(data_config.get_stock_daily_path('000001.SZ'))
-```
-
-### validate_ff5_model.py
-FF5模型验证工具，检查因子有效性：
-
-```bash
-python others/validate_ff5_model.py
 ```
 
 ### view_parquet.py
@@ -901,15 +764,10 @@ RETRY_TIMES = 3   # 失败重试次数
 | 每日基础指标 | 1,705万条 | 500 MB |
 | 财务三大表 | 5,444只×3表×60季 | 800 MB |
 | 财务指标 | 5,444只×100指标 | 200 MB |
-| FF5因子 | 3,096天 | < 1 MB |
-| FF3因子（含金融股） | 3,034天 | < 1 MB |
-| 中国版三因子(CH-3) | 3,034天 | < 1 MB |
-| UMD动量因子 | 3,034天 | < 1 MB |
-| LIQ流动性因子 | 3,034天 | < 1 MB |
 | 指数数据 | 5个×3,800天 | 10 MB |
 | 指数每日估值(PE/PB) | 4个指数 | < 1 MB |
 | 全球指数数据 | 3个指数 | < 1 MB |
-| 申万行业数据**: 
+| **申万行业数据**: 
   - 申万行业指数: 47,592条记录
   - 申万L2历史映射: 5,443条记录
   - 申万L3成分股: 5,472条记录
@@ -930,11 +788,6 @@ RETRY_TIMES = 3   # 失败重试次数
 - **股票数据**: 5,452只A股，2,678只港股通
 - **港股数据支持**: 集成 Akshare，支持下载港股通个股的复权（HFQ）日线数据，2,678只股票
 - **财务数据**: 2006年至今（部分股票）
-- **因子数据**: 
-  - FF5因子: 2012-11-01 至今
-  - FF3因子: 2013-02-01 至今
-  - 中国版三因子: 2013-02-01 至今
-  - 自定义因子(UMD/LIQ): 2013-02-01 至今
 - **市场数据**: 
   - 融资融券汇总: 2019-01-08 至今（1,667条记录）
   - 融资融券明细: 2010-03-31 至今（3,799个文件）
@@ -948,52 +801,42 @@ RETRY_TIMES = 3   # 失败重试次数
 
 ## 🎯 应用场景
 
-### 1. 多因子策略研究
-- 因子有效性检验
-- 因子组合优化
-- 风险归因分析
+### 1. 量化选股策略
+- 基于财务指标的价值投资
+- 成长股筛选
+- 行业轮动策略
 
-### 2. 残差动量策略
-- FF5回归去除系统性风险
-- 提取个股特异性收益
-- 构建市场中性组合
+### 2. 技术分析研究
+- 趋势跟踪策略
+- 动量策略
+- 均值回归策略
 
 ### 3. 指数增强策略
-- 基于FF5因子的增强
 - 行业中性化处理
 - Smart Beta策略
+- 指数成分股优化
 
 ### 4. 风险管理
-- 基于FF5的风险分解
 - VaR/CVaR计算
 - 压力测试
+- 组合风险监控
 
 ---
 
 ## ⚠️ 注意事项
 
-### 1. 银行股与tangible_asset
-
-**现象**: 银行股的`tangible_asset`字段100%缺失  
-**原因**: 银行资产主要是金融资产，而非有形资产  
-**影响**: 
-- ✅ 银行股仍参与MKT_RF, SMB, HML, RMW（4个因子）
-- ❌ 银行股被CMA因子排除（这是合理的）
-
-**详细分析**: 见 [银行股与FF5因子影响分析.md](银行股与FF5因子影响分析.md)
-
-### 2. API限制
+### 1. API限制
 
 - Tushare Pro有API调用频率限制
 - 建议使用高级账户（2000+积分）
 - 首次下载建议分批进行
 
-### 3. 存储空间
+### 2. 存储空间
 
 - 完整数据约需3.5 GB磁盘空间
 - 建议预留10 GB以上空间（含增量数据）
 
-### 4. 未来函数
+### 3. 未来函数
 
 - 所有财务数据严格使用`ann_date`（公告日期）
 - 月度调仓在月末使用已公告数据
@@ -1019,15 +862,7 @@ python check_data_completeness.py
 python download_data_manager.py
 ```
 
-**3. FF5构建失败**
-```
-可能原因:
-- 财务数据不完整 → 运行check_data_completeness.py
-- tangible_asset字段缺失 → 正常现象（部分股票）
-- 内存不足 → 关闭其他程序或增加swap
-```
-
-**4. 指数数据检查失败**
+**3. 指数数据检查失败**
 ```
 注意: 000300.SH和399300.SZ是同一指数的不同代码
 解决: v2.0检查工具已自动处理

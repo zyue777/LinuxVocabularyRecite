@@ -48,7 +48,14 @@ class RateLimiter:
 
 
 class QuantDataManager:
-    """量化数据中心管理器"""
+    """
+    量化数据中心管理器
+    
+    注意: 
+    - FF5/FF3/CH3/自定义因子(UMD/LIQ)的构建功能已从本管理器中剥离
+    - 无风险利率(RFR)和宏观数据功能仍保留
+    - 因子构建脚本仍可在 '因子计算/' 目录下独立运行
+    """
     
     def __init__(self, data_center_path: Optional[str] = None, token: Optional[str] = None):
         """
@@ -96,8 +103,7 @@ class QuantDataManager:
             'index_global_daily': self.data_center_path / "index/global_daily",  # 🆕 全球指数
             'index_constituents': self.data_center_path / "index/constituents",
             'index_weight': self.data_center_path / "index/weight",
-            'factors_ff5': self.data_center_path / "factors/fama_french_5",
-            'factors_rfr': self.data_center_path / "factors/risk_free",
+            'factors_rfr': self.data_center_path / "factors/risk_free",  # 无风险利率数据（保留）
             'industry_sw': self.data_center_path / "classification/industry_sw",
             'stock_daily_basic': self.data_center_path / "stock/daily_basic",
             'stock_fina_indicator': self.data_center_path / "stock/fina_indicator",
