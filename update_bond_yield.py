@@ -1,8 +1,9 @@
-#!/usr/bin/env python3
+#!/home/zy/miniconda3/envs/dailyreport/bin/python
 # -*- coding: utf-8 -*-
 """
 国债收益率数据增量更新脚本
-使用AkShare获取中美国债收益率数据，自动增量更新
+使用 AkShare 获取中美国债收益率（非 Tushare 代理接口）
+策略选项14 内的国债更新走 QuantDataManager.pro.yc_cb（Tushare 代理）
 """
 
 import pandas as pd

@@ -28,6 +28,7 @@ def main():
         manager = QuantDataManager()
         print(f"✅ 数据管理器初始化成功")
         print(f"📁 数据中心路径: {manager.data_center_path}")
+        print(f"🔗 Tushare 端点: {manager.pro._DataApi__http_url}")
     except Exception as e:
         print(f"❌ 数据管理器初始化失败: {e}")
         return 1

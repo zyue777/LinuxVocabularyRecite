@@ -1015,7 +1015,7 @@ class QuantDataManager:
     def _fetch_income_worker(self, ts_code: str) -> Dict[str, Any]:
         """并发工作函数：获取单只股票的利润表数据"""
         try:
-            table_path = self.paths['stock_financial_tables'] / 'income'
+            table_path = self.paths['financial_income']
             table_path.mkdir(parents=True, exist_ok=True)
             file_path = table_path / f"{ts_code}.parquet"
             
@@ -1048,7 +1048,7 @@ class QuantDataManager:
     def _fetch_balancesheet_worker(self, ts_code: str) -> Dict[str, Any]:
         """并发工作函数：获取单只股票的资产负债表数据"""
         try:
-            table_path = self.paths['stock_financial_tables'] / 'balancesheet'
+            table_path = self.paths['financial_balancesheet']
             table_path.mkdir(parents=True, exist_ok=True)
             file_path = table_path / f"{ts_code}.parquet"
             
@@ -1081,7 +1081,7 @@ class QuantDataManager:
     def _fetch_cashflow_worker(self, ts_code: str) -> Dict[str, Any]:
         """并发工作函数：获取单只股票的现金流量表数据"""
         try:
-            table_path = self.paths['stock_financial_tables'] / 'cashflow'
+            table_path = self.paths['financial_cashflow']
             table_path.mkdir(parents=True, exist_ok=True)
             file_path = table_path / f"{ts_code}.parquet"
             

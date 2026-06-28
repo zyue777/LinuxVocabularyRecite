@@ -1,11 +1,11 @@
-#!/usr/bin/env python3
+#!/home/zy/miniconda3/envs/dailyreport/bin/python
 # -*- coding: utf-8 -*-
 """
 财务三大报表数据下载脚本 - 低速稳定版
 
 特点：
   - 每批次只处理50只股票
-  - 每分钟严格控制在200次API调用以内
+  - 每分钟严格控制在套餐限额以内（见 .env TUSHARE_RATE_LIMIT，默认150次/分）
   - 适合首次大批量下载或补充遗漏数据
   - 自动跳过已下载的股票（增量更新）
   
@@ -20,6 +20,7 @@
 import time
 from datetime import datetime
 from download_data_manager import QuantDataManager
+from tushare_client import get_rate_limit
 
 def print_separator(char='=', length=80):
     """打印分隔线"""
@@ -46,11 +47,12 @@ def download_financial_tables_slow():
     print("  - ✅ 自动计算实际需要下载的数量")
     print("  - ✅ 动态调整预估时间")
     
+    rate = get_rate_limit()
     print("\n配置参数:")
     print("  - 批次大小: 50只股票/批")
     print("  - 并发线程: 1个")
-    print("  - API限制: 严格控制在200次/分钟以内")
-    print("  - 增量更新: Worker内部自动判断")
+    print(f"  - API限制: 约 {int(rate * 0.9)} 次/分钟（套餐 {rate} 次/分，见 .env）")
+    print("  - Tushare: SDK 代理 ts.gyzcloud.top（经 QuantDataManager → tushare_client）")
     
     print("\n" + "=" * 80)
     
@@ -81,15 +83,15 @@ def download_financial_tables_slow():
     tables_info = {
         'income': {
             'name': '利润表',
-            'path': manager.paths['stock_financial_tables'] / 'income'
+            'path': manager.paths['financial_income']
         },
         'balancesheet': {
             'name': '资产负债表',
-            'path': manager.paths['stock_financial_tables'] / 'balancesheet'
+            'path': manager.paths['financial_balancesheet']
         },
         'cashflow': {
             'name': '现金流量表',
-            'path': manager.paths['stock_financial_tables'] / 'cashflow'
+            'path': manager.paths['financial_cashflow']
         }
     }
     
@@ -145,7 +147,8 @@ def download_financial_tables_slow():
         return
     
     # 动态估算时间（基于实际需要更新的数量）
-    estimated_minutes = total_need_update / 200  # 200次/分钟
+    effective_rate = int(get_rate_limit() * 0.9)
+    estimated_minutes = total_need_update / max(effective_rate, 1)
     estimated_hours = estimated_minutes / 60
     
     print(f"\n⏱️  预计总耗时: {estimated_minutes:.1f} 分钟 ({estimated_hours:.2f} 小时)")
@@ -163,10 +166,7 @@ def download_financial_tables_slow():
     
     # 配置参数（低速稳定）
     batch_size = 50      # 每批次50只股票
-    max_workers = 1      # 单线程（最稳定）
-    
-    # 理论并发：50 × 1 = 50次/批次
-    # 安全余量：每批次间隔15秒 → 约200次/分钟
+    max_workers = 1      # 单线程（最稳定，适配 150 次/分代理套餐）
     
     # ========== 1. 下载利润表 ==========
     print("\n【步骤 1/3】下载利润表数据")
