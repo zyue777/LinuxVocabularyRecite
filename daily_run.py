@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/home/zy/miniconda3/envs/dailyreport/bin/python
 # -*- coding: utf-8 -*-
 """
 daily_run.py - 常规数据下载一键执行脚本
@@ -146,17 +146,22 @@ def main():
     print(f"  Python:   {PYTHON}")
     print("  期权目录: " + str(OPTION_DIR))
     
-    # 验证 Tushare Token
+    # 验证 Tushare 配置
     try:
         import config
         token = config.TUSHARE_TOKEN
+        api_url = config.TUSHARE_API_URL
+        expire = config.TUSHARE_EXPIRE
         if token and len(token) > 10:
             token_display = f"{token[:4]}...{token[-4:]}"
             print(f"  Tushare Token: {token_display} (已配置)")
+            print(f"  Tushare 端点:  {api_url}")
+            if expire:
+                print(f"  套餐到期:    {expire}")
         else:
-            print("  Tushare Token: 未配置或格式不正确")
-    except:
-        print("  Tushare Token: 无法加载 config.py")
+            print("  Tushare Token: 未配置，请检查 .env")
+    except Exception:
+        print("  Tushare: 无法加载 config.py / .env")
 
     results = []
 

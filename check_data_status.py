@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/home/zy/miniconda3/envs/dailyreport/bin/python
 # -*- coding: utf-8 -*-
 """
 数据状态查看工具
@@ -1835,14 +1835,8 @@ class DataStatusChecker:
                 trade_calendar = None
                 if TUSHARE_AVAILABLE and ts is not None:
                     try:
-                        # 尝试从config获取token
-                        try:
-                            import config
-                            if hasattr(config, 'TUSHARE_TOKEN'):
-                                ts.set_token(config.TUSHARE_TOKEN)
-                        except:
-                            pass
-                        pro = ts.pro_api()
+                        from tushare_client import get_pro
+                        pro = get_pro()
                         # 获取最近5年的交易日历
                         end_date = datetime.now().strftime('%Y%m%d')
                         start_date = (datetime.now() - timedelta(days=5*365)).strftime('%Y%m%d')

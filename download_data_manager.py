@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/home/zy/miniconda3/envs/dailyreport/bin/python
 # -*- coding: utf-8 -*-
 """
 A股量化研究数据中心 - 核心数据管理脚本
@@ -8,7 +8,6 @@ A股量化研究数据中心 - 核心数据管理脚本
 import os
 import time
 import pandas as pd
-import tushare as ts
 import akshare as ak
 import threading
 from pathlib import Path
@@ -16,6 +15,7 @@ from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import warnings
+from tushare_client import get_pro, get_rate_limit, merge_adj_bars
 warnings.filterwarnings('ignore')
 
 
@@ -71,24 +71,17 @@ class QuantDataManager:
         else:
             self.data_center_path = Path(data_center_path)
         
-        # 初始化Tushare Pro
-        if token is None:
-            try:
-                import config
-                token = config.TUSHARE_TOKEN
-            except (ImportError, AttributeError):
-                print("警告: 无法从config.py读取Tushare Token，请手动设置")
+        # 初始化Tushare Pro（凭证与代理端点见 .env / tushare_client.py）
+        try:
+            self.pro = get_pro()
+            print(f"Tushare Pro 已连接: {self.pro._DataApi__http_url}")
+        except RuntimeError as e:
+            print(f"警告: {e}")
+            raise
         
-        if token:
-            ts.set_token(token)
-            print(f"Tushare Token已设置")
-        else:
-            print("警告: 未设置Tushare Token，请确保已配置")
-        
-        self.pro = ts.pro_api()
-        
-        # 初始化限流器：每分钟700次（留出余量，API限制为800次）
-        self.rate_limiter = RateLimiter(max_calls=700, period=60)
+        # 限流：按套餐上限留 10% 余量（默认 150 次/分 → 135）
+        rate_limit = max(1, int(get_rate_limit() * 0.9))
+        self.rate_limiter = RateLimiter(max_calls=rate_limit, period=60)
         
         # 定义路径
         self.paths = {
@@ -291,12 +284,25 @@ class QuantDataManager:
                     list_date = stock_info.get(ts_code)
                     start_date_actual = list_date if list_date and list_date != 'None' else '19900101'
 
-            # 获取数据（直接调用API，让Tushare处理交易日历）
-            df = self._safe_api_call(ts.pro_bar,
-                                   ts_code=ts_code,
-                                   adj='hfq',
-                                   start_date=start_date_actual,
-                                   end_date=end_date)
+            if start_date_actual > end_date:
+                return {'ts_code': ts_code, 'status': 'up_to_date'}
+
+            # SDK 文档路径: pro.daily + pro.adj_factor（各走一次限流，等价 pro_bar(api=pro, adj='hfq')）
+            daily_df = self._safe_api_call(
+                self.pro.daily,
+                ts_code=ts_code,
+                start_date=start_date_actual,
+                end_date=end_date,
+            )
+            if daily_df is None or daily_df.empty:
+                return {'ts_code': ts_code, 'status': 'api_empty'}
+            adj_df = self._safe_api_call(
+                self.pro.adj_factor,
+                ts_code=ts_code,
+                start_date=start_date_actual,
+                end_date=end_date,
+            )
+            df = merge_adj_bars(daily_df, adj_df, adj='hfq')
             
             if df is not None and not df.empty:
                 return {'ts_code': ts_code, 'status': 'success', 'data': (df, file_path)}
@@ -369,7 +375,7 @@ class QuantDataManager:
         print("=" * 60)
         print("开始更新股票日K线数据（高并发模式）")
         print(f"最大并发线程数: {max_workers}")
-        print("注意: 已限制API调用频率，约750次/分钟")
+        print(f"注意: API 限流约 {int(get_rate_limit() * 0.9)} 次/分钟（套餐 {get_rate_limit()} 次/分）")
         print("=" * 60)
         
         # 🎯 直接获取Tushare实际最新数据日期
@@ -2256,7 +2262,7 @@ class QuantDataManager:
         print("=" * 60)
         print("开始更新股票资金流向数据（高并发模式）")
         print(f"最大并发线程数: {max_workers}")
-        print("注意: 已限制API调用频率，约750次/分钟")
+        print(f"注意: API 限流约 {int(get_rate_limit() * 0.9)} 次/分钟（套餐 {get_rate_limit()} 次/分）")
         print("=" * 60)
         
         # 确保目录存在

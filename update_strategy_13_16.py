@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/home/zy/miniconda3/envs/dailyreport/bin/python
 # -*- coding: utf-8 -*-
 """
 A股量化研究数据中心 - 策略数据更新脚本
