@@ -4,6 +4,28 @@
 [![Python](https://img.shields.io/badge/Python-3.8+-green.svg)](https://www.python.org/)
 [![数据源](https://img.shields.io/badge/数据源-Tushare%20Pro-red.svg)](https://tushare.pro)
 
+## ⚡ 2026-07-04 重要变更（日线提速18倍 + bug修复）
+
+- **日线更新改用 `fast_daily_update.py`（按交易日拉全市场）**：旧逐只法约80分钟，
+  新法补一天≈10秒、补3个月≈5分钟。口径经 Tushare 官方 pro_bar 独立对照一致（误差≈0）。
+  `daily_run.py` / `download_data_manager.py` 选项1、选项2 均已改走此脚本。
+- **修复停更bug**：旧 `update_stock_daily_hfq` 的"抽样前100只、95%最新就整体跳过"
+  短路逻辑，导致92%股票停在2026-03-26。已用快脚本旁路，旧方法保留备查不再调用。
+  本次已把全市场补齐到最新交易日。
+- **moneyflow 停更**：无下游读取的死数据（1.5G）且逐只拉约41分钟，已从每日流程移除，
+  需要时手动跑菜单选项恢复。
+- 备份：改造前 daily_hfq/qfq 已备份于 `quant_data_center/stock/_bak_daily_*_20260704/`
+  （约1.6G，确认无误后可删）。
+
+### 2026-07-05（T18 数据中心收尾）
+- **新股补齐**：全市场缺失的 48 只次新股已全量补 daily_hfq/qfq（口径同 fast_daily，
+  对官方 pro_bar 一致），fast_daily 重跑 `无本地文件=0`。
+- **死数据冷冻归档**：`stock/moneyflow`(1.5G) + `stock/cyq_perf`(196M) 已 mv 至
+  `quant_data_center/_冷冻归档/stock/`，清单+恢复法见 `_冷冻归档/清单.md`；解冻= mv 回原路径。
+  注：QuantDataManager 初始化按标准结构重建空占位目录，属正常（0 文件、不重下载）。
+  其余 4 类候选（margin_detail/stock_hk/hsgt/derivatives）因有活跃回测消费方，本次保留原位待评估。
+- **旧备份**：`_bak_daily_*_20260704`（1.6G）validate 已通过，按用户决定本次暂保留不删。
+
 ## 🎯 项目概述
 
 这是一个专为A股量化研究设计的**专业级本地数据中心**，提供完整的股票、财务、指数、市场数据支持。

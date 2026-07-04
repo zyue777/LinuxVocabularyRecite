@@ -3776,22 +3776,27 @@ class QuantDataManager:
         
         print("\n步骤2: 更新股票核心数据...")
         try:
-            self.update_stock_daily_hfq(start_date, end_date)  # 包含自动前复权转换
+            # 2026-07-04：日线改用按交易日快脚本 fast_daily_update（比旧逐只法快约18倍，
+            # 且不含旧 update_stock_daily_hfq 的抽样短路bug；口径经官方 pro_bar 对照一致）。
+            from fast_daily_update import run_fast_update
+            run_fast_update(start_date, end_date)
         except Exception as e:
             print(f"❌ 更新股票日K线数据失败: {e}")
             failed_steps.append("股票日K线数据")
-            
+
         # try:
         #     self.update_hk_stock_daily_hfq(start_date, end_date)  # 🆕 港股通数据 (已移除，需单独更新)
         # except Exception as e:
         #     print(f"❌ 更新港股通日K线数据失败: {e}")
         #     failed_steps.append("港股通日K线数据")
-        
-        try:
-            self.update_stock_moneyflow(start_date, end_date)  # 🆕 资金流向数据
-        except Exception as e:
-            print(f"❌ 更新股票资金流向数据失败: {e}")
-            failed_steps.append("股票资金流向数据")
+
+        # 2026-07-04：moneyflow 无任何下游读取（死数据1.5G）且逐只拉耗时约41分钟，已停更。
+        # 未来若有项目需要，手动跑菜单资金流选项恢复即可。
+        # try:
+        #     self.update_stock_moneyflow(start_date, end_date)  # 🆕 资金流向数据
+        # except Exception as e:
+        #     print(f"❌ 更新股票资金流向数据失败: {e}")
+        #     failed_steps.append("股票资金流向数据")
         
         print("\n步骤3: 更新因子模型原材料...")
         try:
@@ -3896,7 +3901,10 @@ def main():
         if choice == '1':
             manager.update_all()
         elif choice == '2':
-            manager.update_stock_daily_hfq()
+            # 2026-07-04：菜单2 改走快脚本；旧 update_stock_daily_hfq 保留但已停用
+            # （含抽样短路bug，是导致数据停在3-26的元凶），不删仅备查。
+            from fast_daily_update import run_fast_update
+            run_fast_update()
         elif choice == '3':
             manager.update_stock_moneyflow()
         elif choice == '16':
