@@ -33,8 +33,10 @@
   已 mv 至 `_冷冻归档/{market,stock_hk}/`，共释放 645M；明细见 `_冷冻归档/清单.md` 第二批节。
 - **根目录可配**：config.py 的 DATA_CENTER_PATH 改读 `QUANT_DATA_CENTER` 环境变量（默认=现路径、零破坏）；
   国债维护脚本 update_bond_yield.py 同步改从 config 取路径。
-- **canonical 注册表**：5 条共用序列的唯一源+消费方+切换状态登记于 `_公共/规范/canonical注册表.md`；
-  SHIBOR/idx_sse 两处重复副本待切，见难题清单 T15-a/b。
+- **canonical 注册表**：5 条共用序列的唯一源+消费方+切换状态登记于 `_公共/规范/canonical注册表.md`。
+- **000001.SH 补齐早期缺口**：上证 canonical 原缺 1990-1993（manager 配置本要 19900101、意外缺口），
+  从指标库 idx_sse append 524 行（19901219起）；原 8150 行 md5 不变、合并 8674、原子写、备份
+  `000001.SH.parquet.bak_pre_T15backfill`。SHIBOR 副本待切见难题清单 T15-a。
 
 ## 🎯 项目概述
 
