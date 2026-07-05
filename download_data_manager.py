@@ -3397,7 +3397,7 @@ class QuantDataManager:
 
     def update_missing_data_for_strategy(self, start_date: Optional[str] = None, end_date: Optional[str] = None,
                                         include_index_valuation: bool = True,
-                                        include_bond_yield: bool = True,
+                                        include_bond_yield: bool = False,  # T17: 国债canonical改由update_bond_yield.py(akshare)单一维护，本路径退役停写
                                         include_options_pcr: bool = False,
                                         include_futures_holding: bool = False):
         """
@@ -3407,7 +3407,7 @@ class QuantDataManager:
             start_date: 开始日期 (YYYYMMDD)，默认为None（自动从本地最新日期开始）
             end_date: 结束日期 (YYYYMMDD)，默认为None（使用当前日期）
             include_index_valuation: 是否更新指数估值数据，默认True
-            include_bond_yield: 是否更新国债收益率数据，默认True
+            include_bond_yield: 已退役默认False（国债canonical归update_bond_yield.py单一维护，T17）
             include_options_pcr: 是否更新期权PCR数据，默认False（可在其他项目获取）
             include_futures_holding: 是否更新期货持仓数据，默认False（可在其他项目获取）
         """
@@ -3479,63 +3479,12 @@ class QuantDataManager:
                 print(f"❌ 更新指数估值数据失败: {e}")
                 failed_steps.append("指数估值数据")
         
-        # ========== 2. 更新10年期国债收益率 ==========
+        # ========== 2. 国债收益率：已退役（T17 定 canonical 单一源）==========
+        # 国债 10y/30y canonical 由 update_bond_yield.py(akshare) 单一维护；本路径原用
+        # tushare yc_cb 双写同一文件 china_bond_yield_10y.parquet，属口径漂移点，已停写。
+        # 需更新请运行 update_bond_yield.py（见 _公共/规范/canonical注册表.md 注1）。
         if include_bond_yield:
-            print("\n" + "=" * 60)
-            print("步骤2: 更新10年期国债收益率")
-            print("=" * 60)
-            try:
-                macro_dir = self.data_center_path / 'factors' / 'macro'
-                macro_dir.mkdir(parents=True, exist_ok=True)
-                file_path = macro_dir / 'china_bond_yield_10y.parquet'
-                
-                # 确定开始日期
-                latest_date = None
-                if start_date is None:
-                    latest_date = self._get_latest_date(file_path, 'trade_date')
-                    if latest_date:
-                        latest_dt = datetime.strptime(latest_date, '%Y%m%d')
-                        start_date_actual = (latest_dt + timedelta(days=1)).strftime('%Y%m%d')
-                    else:
-                        start_date_actual = '20100101'
-                else:
-                    start_date_actual = start_date
-                
-                # 检查是否需要更新
-                if latest_date and latest_date >= end_date:
-                    print(f"  数据已是最新 (截止 {latest_date})")
-                else:
-                    print(f"  下载 {start_date_actual} 至 {end_date} 的国债收益率数据...")
-                    # Tushare API: yield_curve, curve_type='0' (国债), period='10.0' (10年期)
-                    df = self._safe_api_call(
-                        self.pro.yc_cb,
-                        curve_type='0',
-                        start_date=start_date_actual,
-                        end_date=end_date
-                    )
-                    
-                    if df is not None and not df.empty:
-                        # 筛选10年期数据
-                        df = df[df['curve_term'] == 10.0].copy()
-                        
-                        if not df.empty:
-                            # 合并数据
-                            if file_path.exists():
-                                existing_df = pd.read_parquet(file_path, engine='pyarrow')
-                                combined_df = pd.concat([existing_df, df], ignore_index=True)
-                                combined_df = combined_df.drop_duplicates(subset=['trade_date']).sort_values('trade_date')
-                                combined_df.to_parquet(file_path, engine='pyarrow', index=False)
-                            else:
-                                df.to_parquet(file_path, engine='pyarrow', index=False)
-                            
-                            print(f"  ✅ 成功更新 {len(df)} 条记录")
-                        else:
-                            print(f"  ⚠️  无10年期数据")
-                    else:
-                        print(f"  ⚠️  无新数据")
-            except Exception as e:
-                print(f"❌ 更新国债收益率数据失败: {e}")
-                failed_steps.append("国债收益率数据")
+            print("\n[T17] 国债收益率写入已退役：canonical 归 update_bond_yield.py(akshare) 单一维护，本路径不再写。")
         
         # ========== 3. 更新期权PCR (聚合数据) ==========
         if include_options_pcr:
@@ -3960,7 +3909,7 @@ def main():
             print("="*60)
             manager.update_missing_data_for_strategy(
                 include_index_valuation=True,
-                include_bond_yield=True,
+                include_bond_yield=False,  # T17退役：国债canonical归update_bond_yield.py单一维护
                 include_options_pcr=False,
                 include_futures_holding=False
             )
