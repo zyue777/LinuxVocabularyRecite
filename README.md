@@ -23,8 +23,18 @@
 - **死数据冷冻归档**：`stock/moneyflow`(1.5G) + `stock/cyq_perf`(196M) 已 mv 至
   `quant_data_center/_冷冻归档/stock/`，清单+恢复法见 `_冷冻归档/清单.md`；解冻= mv 回原路径。
   注：QuantDataManager 初始化按标准结构重建空占位目录，属正常（0 文件、不重下载）。
-  其余 4 类候选（margin_detail/stock_hk/hsgt/derivatives）因有活跃回测消费方，本次保留原位待评估。
+  其余 4 类候选（margin_detail/stock_hk/hsgt/derivatives）当时保留原位待评估——
+  **已于 T15（下方 2026-07-05 节）逐类实测后全部归档**。
 - **旧备份**：`_bak_daily_*_20260704`（1.6G）validate 已通过，按用户决定本次暂保留不删。
+
+### 2026-07-05（T15 共用数据 canonical 统一）
+- **4 类死数据归档**：T18 遗留的 margin_detail(339M)/stock_hk(303M)/hsgt(24K)/derivatives(2.7M)，
+  逐类 command grep 实测消费方后用户拍板全部冷冻归档（均不设 canonical，非共用序列），
+  已 mv 至 `_冷冻归档/{market,stock_hk}/`，共释放 645M；明细见 `_冷冻归档/清单.md` 第二批节。
+- **根目录可配**：config.py 的 DATA_CENTER_PATH 改读 `QUANT_DATA_CENTER` 环境变量（默认=现路径、零破坏）；
+  国债维护脚本 update_bond_yield.py 同步改从 config 取路径。
+- **canonical 注册表**：5 条共用序列的唯一源+消费方+切换状态登记于 `_公共/规范/canonical注册表.md`；
+  SHIBOR/idx_sse 两处重复副本待切，见难题清单 T15-a/b。
 
 ## 🎯 项目概述
 

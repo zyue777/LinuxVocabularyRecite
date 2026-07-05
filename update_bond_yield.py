@@ -6,10 +6,15 @@
 策略选项14 内的国债更新走 QuantDataManager.pro.yc_cb（Tushare 代理）
 """
 
+import sys
 import pandas as pd
 import akshare as ak
 from pathlib import Path
 from datetime import datetime
+
+# 数据中心根目录走 config（可用 QUANT_DATA_CENTER 覆盖，与全局单一真相源一致）
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import config
 
 def update_bond_yield_incremental():
     """
@@ -33,14 +38,14 @@ def update_bond_yield_incremental():
             {
                 'name': '10年期',
                 'col': '中国国债收益率10年',
-                'file': Path('/home/zy/桌面/数据中心/quant_data_center/factors/macro/china_bond_yield_10y.parquet'),
+                'file': config.DATA_CENTER_PATH / 'factors' / 'macro' / 'china_bond_yield_10y.parquet',
                 'ts_code': 'CN10YR.IB',
                 'term': 10.0
             },
             {
                 'name': '30年期',
                 'col': '中国国债收益率30年',
-                'file': Path('/home/zy/桌面/数据中心/quant_data_center/factors/macro/china_bond_yield_30y.parquet'),
+                'file': config.DATA_CENTER_PATH / 'factors' / 'macro' / 'china_bond_yield_30y.parquet',
                 'ts_code': 'CN30YR.IB',
                 'term': 30.0
             }
